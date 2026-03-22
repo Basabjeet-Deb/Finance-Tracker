@@ -1,6 +1,12 @@
 """
-CPI Data Service
-Handles fetching, processing, and serving India CPI data
+CPI Inflation Intelligence Service
+Provides decision-ready inflation signals for financial decision engine
+
+This is NOT a raw data service - it provides actionable inflation intelligence:
+- Inflation pressure classification (low/medium/high)
+- Data freshness confidence
+- Optimized queries (last 24 months only)
+- Fallback handling for stale/missing data
 """
 import requests
 import logging
@@ -17,11 +23,6 @@ logger = logging.getLogger(__name__)
 DATA_GOV_API_URL = "https://api.data.gov.in/resource/1ca957b4-0cf0-4d7e-a6a7-627d9f13b170"
 API_KEY = "579b464db66ec23bdd0000019068c43cf6e74bca518f2010329bad4d"
 
-# In-memory cache for CPI data
-_cpi_cache = None
-_cache_timestamp = None
-CACHE_DURATION = 3600  # 1 hour in seconds
-
 # Month mapping
 MONTH_MAP = {
     "January": "01", "February": "02", "March": "03", "April": "04",
@@ -29,6 +30,208 @@ MONTH_MAP = {
     "September": "09", "October": "10", "November": "11", "December": "12"
 }
 
+
+# ============================================================================
+# CORE INFLATION INTELLIGENCE FUNCTIONS
+# ============================================================================
+
+def get_inflation_pressure(db: Session) -> Dict:
+    """
+    Get inflation pressure classification for decision-making
+    
+    This is the PRIMARY function that financial_engine should call.
+    Returns actionable inflation intelligence, not raw data.
+    
+    Returns:
+        {
+            "pressure": "low | medium | high",
+            "value": float (YoY inflation %),
+            "confidence": "high | medium | low" (based on data freshness)
+        }
+    """
+    try:
+        # Get latest CPI data (optimized query - only last 2 records needed)
+        latest_records = db.query(CPIData).order_by(
+            CPIData.month.desc()
+        ).limit(2).all()
+        
+        if not latest_records or len(latest_records) < 2:
+            logger.warning("Insufficient CPI data for inflation calculation")
+            return _get_fallback_inflation()
+        
+        latest = latest_records[0]
+        
+        # Calculate year-over-year inflation
+        yoy_inflation = _calculate_yoy_inflation(db, latest)
+        
+        if yoy_inflation is None:
+            logger.warning("Could not calculate YoY inflation")
+            return _get_fallback_inflation()
+        
+        # Classify inflation pressure
+        if yoy_inflation < 3.0:
+            pressure = "low"
+        elif yoy_inflation < 6.0:
+            pressure = "medium"
+        else:
+            pressure = "high"
+        
+        # Determine data freshness confidence
+        confidence = get_data_freshness(latest.month)
+        
+        return {
+            "pressure": pressure,
+            "value": round(yoy_inflation, 2),
+            "confidence": confidence
+        }
+    
+    except Exception as e:
+        logger.error(f"Error calculating inflation pressure: {e}")
+        return _get_fallback_inflation()
+
+
+def get_data_freshness(latest_date: str) -> str:
+    """
+    Determine data freshness confidence level
+    
+    Args:
+        latest_date: Date string in YYYY-MM format
+        
+    Returns:
+        "high" - <= 2 months old
+        "medium" - <= 6 months old
+        "low" - older than 6 months
+    """
+    try:
+        latest_dt = datetime.strptime(latest_date, "%Y-%m")
+        current_dt = datetime.now()
+        
+        # Calculate months difference
+        months_diff = (current_dt.year - latest_dt.year) * 12 + (current_dt.month - latest_dt.month)
+        
+        if months_diff <= 2:
+            return "high"
+        elif months_diff <= 6:
+            return "medium"
+        else:
+            return "low"
+    
+    except Exception as e:
+        logger.error(f"Error calculating data freshness: {e}")
+        return "low"
+
+
+def _calculate_yoy_inflation(db: Session, latest_record: CPIData) -> Optional[float]:
+    """
+    Calculate year-over-year inflation for a given CPI record
+    
+    Args:
+        db: Database session
+        latest_record: Latest CPI record
+        
+    Returns:
+        YoY inflation percentage or None if cannot calculate
+    """
+    try:
+        current_year, current_month = latest_record.month.split("-")
+        prev_year = str(int(current_year) - 1)
+        prev_year_month = f"{prev_year}-{current_month}"
+        
+        # Query for same month last year
+        prev_year_record = db.query(CPIData).filter(
+            CPIData.month == prev_year_month
+        ).first()
+        
+        if not prev_year_record or prev_year_record.value <= 0:
+            return None
+        
+        # Calculate YoY inflation
+        yoy_inflation = ((latest_record.value - prev_year_record.value) / prev_year_record.value) * 100
+        
+        return yoy_inflation
+    
+    except Exception as e:
+        logger.error(f"Error calculating YoY inflation: {e}")
+        return None
+
+
+def _get_fallback_inflation() -> Dict:
+    """
+    Return fallback inflation data when real data is unavailable
+    
+    Uses conservative medium pressure estimate
+    """
+    return {
+        "pressure": "medium",
+        "value": 5.0,
+        "confidence": "low"
+    }
+
+
+# ============================================================================
+# OPTIMIZED DATA RETRIEVAL (Internal Use Only)
+# ============================================================================
+
+def get_recent_cpi_with_inflation(db: Session, months: int = 24) -> List[Dict]:
+    """
+    Get recent CPI data with inflation metrics (OPTIMIZED)
+    
+    IMPORTANT: Only fetches last N months, not entire dataset
+    Used internally for analysis, not exposed to API
+    
+    Args:
+        db: Database session
+        months: Number of recent months to fetch (default: 24)
+        
+    Returns:
+        List of CPI records with inflation metrics
+    """
+    try:
+        # OPTIMIZED: Fetch only recent records in descending order
+        cpi_records = db.query(CPIData).order_by(
+            CPIData.month.desc()
+        ).limit(months).all()
+        
+        if not cpi_records:
+            return []
+        
+        # Reverse to chronological order for processing
+        cpi_records = list(reversed(cpi_records))
+        
+        result = []
+        
+        for i, record in enumerate(cpi_records):
+            data = {
+                "date": record.month,
+                "cpi": record.value,
+                "month_to_month_inflation": None,
+                "year_over_year_inflation": None
+            }
+            
+            # Month-to-month (only if previous record exists in our dataset)
+            if i > 0:
+                prev_record = cpi_records[i - 1]
+                if prev_record.value > 0:
+                    mtm = ((record.value - prev_record.value) / prev_record.value) * 100
+                    data["month_to_month_inflation"] = round(mtm, 2)
+            
+            # Year-over-year
+            yoy = _calculate_yoy_inflation(db, record)
+            if yoy is not None:
+                data["year_over_year_inflation"] = round(yoy, 2)
+            
+            result.append(data)
+        
+        return result
+    
+    except Exception as e:
+        logger.error(f"Error fetching recent CPI data: {e}")
+        return []
+
+
+# ============================================================================
+# DATA MANAGEMENT FUNCTIONS
+# ============================================================================
 
 def fetch_cpi_from_api(limit: int = 1000, offset: int = 0) -> Optional[Dict]:
     """Fetch CPI data from data.gov.in API"""
@@ -82,7 +285,11 @@ def filter_and_transform_records(records: List[Dict]) -> List[Dict]:
 
 
 def fetch_and_store_cpi_data(db: Session, force_refresh: bool = False) -> bool:
-    """Fetch CPI data from API and store in database"""
+    """
+    Fetch CPI data from API and store in database
+    
+    This is a data management function, not used for decision-making
+    """
     try:
         if not force_refresh:
             existing_count = db.query(func.count(CPIData.id)).scalar()
@@ -137,70 +344,21 @@ def fetch_and_store_cpi_data(db: Session, force_refresh: bool = False) -> bool:
         return False
 
 
-def get_all_cpi_with_inflation(db: Session, limit: int = 100) -> List[Dict]:
-    """Get CPI data with computed inflation metrics (cached)"""
-    global _cpi_cache, _cache_timestamp
+def get_latest_cpi(db: Session) -> Optional[CPIData]:
+    """
+    Get the most recent CPI record
     
-    # Check cache
-    now = datetime.now().timestamp()
-    if _cpi_cache and _cache_timestamp and (now - _cache_timestamp) < CACHE_DURATION:
-        logger.info("Returning cached CPI data")
-        return _cpi_cache[-limit:] if limit else _cpi_cache
-    
-    # Fetch from database
-    cpi_records = db.query(CPIData).order_by(CPIData.month).all()
-    
-    if not cpi_records:
-        return []
-    
-    result = []
-    
-    for i, record in enumerate(cpi_records):
-        data = {
-            "date": record.month,
-            "cpi": record.value,
-            "month_to_month_inflation": None,
-            "year_over_year_inflation": None
-        }
-        
-        # Month-to-month
-        if i > 0:
-            prev_record = cpi_records[i - 1]
-            if prev_record.value > 0:
-                mtm = ((record.value - prev_record.value) / prev_record.value) * 100
-                data["month_to_month_inflation"] = round(mtm, 2)
-        
-        # Year-over-year
-        current_year, current_month = record.month.split("-")
-        prev_year = str(int(current_year) - 1)
-        prev_year_month = f"{prev_year}-{current_month}"
-        
-        prev_year_record = db.query(CPIData).filter(CPIData.month == prev_year_month).first()
-        if prev_year_record and prev_year_record.value > 0:
-            yoy = ((record.value - prev_year_record.value) / prev_year_record.value) * 100
-            data["year_over_year_inflation"] = round(yoy, 2)
-        
-        result.append(data)
-    
-    # Update cache
-    _cpi_cache = result
-    _cache_timestamp = now
-    logger.info(f"Cached {len(result)} CPI records")
-    
-    if limit and limit < len(result):
-        return result[-limit:]
-    
-    return result
-
-
-def get_latest_cpi(db: Session):
-    """Get the most recent CPI data"""
+    Used for data management, not for decision-making
+    """
     return db.query(CPIData).order_by(CPIData.month.desc()).first()
 
 
-
 def refresh_cpi_data(db: Session) -> Dict:
-    """Manually refresh CPI data from API"""
+    """
+    Manually refresh CPI data from API
+    
+    Admin/maintenance function
+    """
     try:
         success = fetch_and_store_cpi_data(db, force_refresh=True)
         
@@ -223,3 +381,21 @@ def refresh_cpi_data(db: Session) -> Dict:
             "status": "error",
             "message": str(e)
         }
+
+
+# ============================================================================
+# DEPRECATED FUNCTIONS (Kept for backward compatibility)
+# ============================================================================
+
+def get_all_cpi_with_inflation(db: Session, limit: int = 24) -> List[Dict]:
+    """
+    DEPRECATED: Use get_inflation_pressure() instead
+    
+    This function is kept for backward compatibility but should not be used
+    by financial_engine. Use get_inflation_pressure() for decision-making.
+    """
+    logger.warning(
+        "get_all_cpi_with_inflation() is deprecated. "
+        "Use get_inflation_pressure() for decision-making."
+    )
+    return get_recent_cpi_with_inflation(db, months=limit)

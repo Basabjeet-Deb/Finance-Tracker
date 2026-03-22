@@ -7,7 +7,10 @@ from sqlalchemy.orm import Session
 from dataclasses import dataclass
 import logging
 
-from app.services.cpi_service import get_latest_cpi, get_all_cpi_with_inflation
+from app.services.cpi_service import get_inflation_pressure
+from app.services.inflation_engine import calculate_emi_pressure
+from app.services.deals_service import CostOptimizationService
+from app.utils.scoring import calculate_financial_score
 
 logger = logging.getLogger(__name__)
 
@@ -40,15 +43,21 @@ class FinancialDecision:
     amounts: Dict  # Actual ₹ amounts
     
     # Issues detected
-    money_leaks: List[Dict]  # Categories overspending due to inflation
-    violations: List[str]  # Rule violations
+    money_leaks: List[Dict]  # Categories overspending (inflation + behavior)
+    violations: List[Dict]  # Structured rule violations
     
     # Actionable output
-    recommendations: List[str]  # Specific actions with ₹ amounts
+    recommendations: List[str]  # Specific actions with ₹ amounts (max 5)
     priority_actions: List[str]  # Top 3 urgent actions
+    
+    # Cost optimization opportunities
+    optimization_opportunities: List[Dict]  # Targeted cost-saving opportunities (max 2)
     
     # Adjusted targets
     adjusted_thresholds: Dict  # Inflation-adjusted budget targets
+    
+    # Survival metric
+    survival_months: float  # How many months can survive on savings
 
 
 # ============================================================================
@@ -102,15 +111,18 @@ class FinancialDecisionEngine:
         # Step 1: Get inflation context
         inflation = FinancialDecisionEngine._get_inflation_context(db)
         
+        # Step 1b: Get EMI pressure context
+        emi_pressure = calculate_emi_pressure(profile.emi_amount, profile.monthly_income)
+        
         # Step 2: Categorize and calculate spending
         spending = FinancialDecisionEngine._categorize_expenses(expenses)
         percentages = FinancialDecisionEngine._calculate_percentages(
             spending, profile.monthly_income
         )
         
-        # Step 3: Adjust thresholds based on inflation and profile
+        # Step 3: Adjust thresholds based on inflation, EMI pressure, and profile
         adjusted_thresholds = FinancialDecisionEngine._adjust_thresholds(
-            inflation, profile
+            inflation, profile, emi_pressure
         )
         
         # Step 4: Detect violations and money leaks
@@ -118,18 +130,18 @@ class FinancialDecisionEngine:
             percentages, adjusted_thresholds
         )
         money_leaks = FinancialDecisionEngine._detect_money_leaks(
-            spending, inflation
+            spending, inflation, profile.monthly_income
         )
         
-        # Step 5: Calculate risk
+        # Step 5: Calculate risk (FIXED: now passes money_leaks)
         risk_score, risk_level = FinancialDecisionEngine._calculate_risk(
-            percentages, violations, inflation, profile
+            percentages, violations, inflation, profile, money_leaks
         )
         
         # Step 6: Generate recommendations
         recommendations = FinancialDecisionEngine._generate_recommendations(
             spending, percentages, adjusted_thresholds, 
-            inflation, profile, violations, money_leaks
+            inflation, profile, violations, money_leaks, emi_pressure
         )
         
         # Step 7: Prioritize actions
@@ -143,6 +155,37 @@ class FinancialDecisionEngine:
             for category, pct in percentages.items()
         }
         
+        # Step 9: Calculate survival months
+        # Use actual savings from current month (income - spending)
+        total_spending = sum(
+            sum(spending[category].values()) 
+            for category in ["fixed", "essential", "lifestyle"]
+        )
+        current_month_savings = max(0, profile.monthly_income - total_spending)
+        
+        # Estimate total savings balance (assume 6 months of accumulated savings)
+        # In production, this should come from user profile
+        estimated_savings_balance = current_month_savings * 6
+        
+        survival_months = FinancialDecisionEngine._calculate_survival_months(
+            estimated_savings_balance, total_spending
+        )
+        
+        # Step 10: Generate cost optimization opportunities
+        # Convert spending dict to flat category -> amount mapping
+        spending_flat = {}
+        for bucket, categories in spending.items():
+            for category, amount in categories.items():
+                spending_flat[category] = amount
+        
+        optimization_opportunities = CostOptimizationService.get_optimization_opportunities(
+            spending_by_category=spending_flat,
+            income=profile.monthly_income,
+            risk_level=risk_level,
+            money_leaks=money_leaks,
+            violations=violations
+        )
+        
         return FinancialDecision(
             risk_level=risk_level,
             risk_score=risk_score,
@@ -153,7 +196,9 @@ class FinancialDecisionEngine:
             violations=violations,
             recommendations=recommendations,
             priority_actions=priority_actions,
-            adjusted_thresholds=adjusted_thresholds
+            optimization_opportunities=optimization_opportunities,
+            adjusted_thresholds=adjusted_thresholds,
+            survival_months=survival_months
         )
     
     # ========================================================================
@@ -162,34 +207,24 @@ class FinancialDecisionEngine:
     
     @staticmethod
     def _get_inflation_context(db: Session) -> Dict:
-        """Extract inflation pressure from CPI data"""
+        """
+        Extract inflation pressure from CPI intelligence service
+        
+        Uses the new get_inflation_pressure() function which returns
+        decision-ready inflation signals instead of raw CPI data
+        """
         try:
-            cpi_data = get_all_cpi_with_inflation(db, limit=2)
-            if not cpi_data or len(cpi_data) == 0:
-                return {
-                    "pressure": "medium",
-                    "value": 5.0,
-                    "status": "estimated"
-                }
-            
-            latest = cpi_data[-1]
-            yoy_inflation = latest.get("year_over_year_inflation", 5.0) or 5.0
-            
-            # Determine pressure level
-            if yoy_inflation < 3:
-                pressure = "low"
-            elif yoy_inflation < 6:
-                pressure = "medium"
-            else:
-                pressure = "high"
+            # Get inflation intelligence (not raw CPI data)
+            inflation_intel = get_inflation_pressure(db)
             
             return {
-                "pressure": pressure,
-                "value": round(yoy_inflation, 2),
-                "status": "actual"
+                "pressure": inflation_intel["pressure"],
+                "value": inflation_intel["value"],
+                "status": "actual" if inflation_intel["confidence"] in ["high", "medium"] else "estimated"
             }
+        
         except Exception as e:
-            logger.warning(f"Could not fetch CPI data: {e}")
+            logger.warning(f"Could not fetch inflation intelligence: {e}")
             return {
                 "pressure": "medium",
                 "value": 5.0,
@@ -203,24 +238,24 @@ class FinancialDecisionEngine:
     @staticmethod
     def _categorize_expenses(expenses: List[Dict]) -> Dict[str, Dict[str, float]]:
         """
-        Categorize expenses into: fixed, essential, lifestyle, savings
+        Categorize expenses into: fixed, essential, lifestyle ONLY
+        
+        CRITICAL: Savings is NOT an expense category - it's computed as leftover money
         
         Returns:
             {
                 "fixed": {"Rent": 15000, "EMI": 10000},
                 "essential": {"Food": 8000, "Transport": 3000},
-                "lifestyle": {"Entertainment": 2000},
-                "savings": {"Investment": 5000}
+                "lifestyle": {"Entertainment": 2000}
             }
         """
         categorized = {
             "fixed": {},
             "essential": {},
-            "lifestyle": {},
-            "savings": {}
+            "lifestyle": {}
         }
         
-        # Category mapping
+        # Category mapping - REMOVED savings category
         CATEGORY_MAP = {
             # Fixed obligations
             "rent": "fixed",
@@ -236,23 +271,25 @@ class FinancialDecisionEngine:
             "utilities": "essential",
             "bills": "essential",
             
-            # Lifestyle
+            # Lifestyle (default for unknown categories)
             "entertainment": "lifestyle",
             "dining": "lifestyle",
             "shopping": "lifestyle",
             "lifestyle": "lifestyle",
             "travel": "lifestyle",
-            
-            # Savings
-            "savings": "savings",
-            "investment": "savings"
+            "other": "lifestyle"
         }
         
         for expense in expenses:
             category = expense.get("category", "Other").lower()
             amount = expense.get("amount", 0)
             
-            # Determine bucket
+            # Skip savings/investment categories - they are NOT expenses
+            if category in ["savings", "investment", "saving"]:
+                logger.warning(f"Skipping '{category}' - savings is not an expense category")
+                continue
+            
+            # Determine bucket (default to lifestyle for unknown)
             bucket = CATEGORY_MAP.get(category, "lifestyle")
             
             # Aggregate
@@ -267,27 +304,30 @@ class FinancialDecisionEngine:
         spending: Dict[str, Dict[str, float]], 
         income: float
     ) -> Dict[str, float]:
-        """Calculate spending as % of income"""
+        """
+        Calculate spending as % of income
+        
+        CRITICAL FIX: Savings is computed as leftover money, NOT from expenses
+        """
         totals = {
             "fixed": sum(spending["fixed"].values()),
             "essential": sum(spending["essential"].values()),
-            "lifestyle": sum(spending["lifestyle"].values()),
-            "savings": sum(spending["savings"].values())
+            "lifestyle": sum(spending["lifestyle"].values())
         }
         
+        # Total spent = fixed + essential + lifestyle
         total_spent = totals["fixed"] + totals["essential"] + totals["lifestyle"]
+        
+        # Actual savings = income - total_spent (leftover money)
+        actual_savings = income - total_spent
         
         # Calculate percentages
         percentages = {
             "fixed": round((totals["fixed"] / income) * 100, 1) if income > 0 else 0,
             "essential": round((totals["essential"] / income) * 100, 1) if income > 0 else 0,
             "lifestyle": round((totals["lifestyle"] / income) * 100, 1) if income > 0 else 0,
-            "savings": round((totals["savings"] / income) * 100, 1) if income > 0 else 0
+            "savings": round((actual_savings / income) * 100, 1) if income > 0 else 0
         }
-        
-        # Calculate actual savings (income - spending)
-        actual_savings = income - total_spent
-        percentages["actual_savings"] = round((actual_savings / income) * 100, 1) if income > 0 else 0
         
         return percentages
     
@@ -296,13 +336,17 @@ class FinancialDecisionEngine:
     # ========================================================================
     
     @staticmethod
-    def _adjust_thresholds(inflation: Dict, profile: UserProfile) -> Dict:
+    def _adjust_thresholds(
+        inflation: Dict, 
+        profile: UserProfile,
+        emi_pressure: Dict
+    ) -> Dict:
         """
-        Adjust budget thresholds based on inflation and user profile
+        Adjust budget thresholds based on inflation, EMI pressure, and user profile
         
         Logic:
         - High inflation → increase essential budget, reduce lifestyle
-        - High EMI → reduce lifestyle, increase savings target
+        - High EMI pressure → reduce lifestyle, increase savings target
         - High medical risk → increase savings target
         - Family dependency → increase essential budget
         """
@@ -317,12 +361,14 @@ class FinancialDecisionEngine:
             thresholds["essential"] += 2
             thresholds["lifestyle"] -= 2
         
-        # EMI adjustments
-        if profile.emi_amount > 0:
-            emi_pct = (profile.emi_amount / profile.monthly_income) * 100
-            if emi_pct > 30:
-                thresholds["lifestyle"] -= 5
-                thresholds["savings"] = max(15, thresholds["savings"])
+        # EMI pressure adjustments (INTEGRATED from inflation_engine)
+        if emi_pressure["emi_pressure"] == "high":
+            thresholds["lifestyle"] -= 5
+            thresholds["savings"] = max(15, thresholds["savings"])
+            logger.info(f"High EMI pressure ({emi_pressure['percentage']}%) - reduced lifestyle allowance")
+        elif emi_pressure["emi_pressure"] == "medium":
+            thresholds["lifestyle"] -= 3
+            logger.info(f"Medium EMI pressure ({emi_pressure['percentage']}%) - slight lifestyle reduction")
         
         # Medical risk adjustments
         if profile.medical_risk == "high":
@@ -351,68 +397,112 @@ class FinancialDecisionEngine:
     def _detect_violations(
         percentages: Dict[str, float], 
         thresholds: Dict
-    ) -> List[str]:
-        """Detect budget rule violations"""
+    ) -> List[Dict]:
+        """
+        Detect budget rule violations
+        
+        Returns structured violations instead of plain strings
+        """
         violations = []
         
         if percentages["fixed"] > thresholds["fixed"]:
             excess = percentages["fixed"] - thresholds["fixed"]
-            violations.append(
-                f"Fixed obligations are {percentages['fixed']:.1f}% of income "
-                f"({excess:.1f}% over safe limit)"
-            )
+            violations.append({
+                "type": "fixed_high",
+                "severity": "high",
+                "current": percentages["fixed"],
+                "threshold": thresholds["fixed"],
+                "excess": round(excess, 1),
+                "message": f"Fixed obligations are {percentages['fixed']:.1f}% of income ({excess:.1f}% over safe limit)"
+            })
         
         if percentages["essential"] > thresholds["essential"]:
             excess = percentages["essential"] - thresholds["essential"]
-            violations.append(
-                f"Essential spending is {percentages['essential']:.1f}% of income "
-                f"({excess:.1f}% over recommended)"
-            )
+            violations.append({
+                "type": "essential_high",
+                "severity": "medium",
+                "current": percentages["essential"],
+                "threshold": thresholds["essential"],
+                "excess": round(excess, 1),
+                "message": f"Essential spending is {percentages['essential']:.1f}% of income ({excess:.1f}% over recommended)"
+            })
         
         if percentages["lifestyle"] > thresholds["lifestyle"]:
             excess = percentages["lifestyle"] - thresholds["lifestyle"]
-            violations.append(
-                f"Lifestyle spending is {percentages['lifestyle']:.1f}% of income "
-                f"({excess:.1f}% over budget)"
-            )
+            violations.append({
+                "type": "lifestyle_high",
+                "severity": "medium",
+                "current": percentages["lifestyle"],
+                "threshold": thresholds["lifestyle"],
+                "excess": round(excess, 1),
+                "message": f"Lifestyle spending is {percentages['lifestyle']:.1f}% of income ({excess:.1f}% over budget)"
+            })
         
-        if percentages["actual_savings"] < thresholds["savings"]:
-            deficit = thresholds["savings"] - percentages["actual_savings"]
-            violations.append(
-                f"Savings rate is only {percentages['actual_savings']:.1f}% "
-                f"({deficit:.1f}% below target)"
-            )
+        if percentages["savings"] < thresholds["savings"]:
+            deficit = thresholds["savings"] - percentages["savings"]
+            violations.append({
+                "type": "savings_low",
+                "severity": "high",
+                "current": percentages["savings"],
+                "threshold": thresholds["savings"],
+                "deficit": round(deficit, 1),
+                "message": f"Savings rate is only {percentages['savings']:.1f}% ({deficit:.1f}% below target)"
+            })
         
         return violations
     
     @staticmethod
     def _detect_money_leaks(
         spending: Dict[str, Dict[str, float]], 
-        inflation: Dict
+        inflation: Dict,
+        income: float
     ) -> List[Dict]:
         """
-        Detect categories where inflation is causing overspending
+        Detect money leaks using HYBRID approach:
+        A. Lifestyle leaks: category spending > 5% of income
+        B. Inflation leaks: essential category with high inflation AND inflation > 6%
+        
+        Returns structured leaks sorted by amount
         """
         leaks = []
         inflation_value = inflation["value"]
         
-        # Check essential categories
-        for category, amount in spending["essential"].items():
-            sensitivity = FinancialDecisionEngine.INFLATION_SENSITIVITY.get(
-                category.lower(), 1.0
-            )
-            impact = inflation_value * sensitivity
-            
-            if impact > 5.0:  # Significant impact
+        # A. LIFESTYLE LEAKS: Check if any category exceeds 5% of income
+        for category, amount in spending["lifestyle"].items():
+            percentage = (amount / income * 100) if income > 0 else 0
+            if percentage > 5.0:
                 leaks.append({
                     "category": category.title(),
                     "amount": amount,
-                    "inflation_impact": round(impact, 1),
-                    "estimated_increase": round(amount * (impact / 100), 2)
+                    "percentage": round(percentage, 1),
+                    "reason": "lifestyle_overspending",
+                    "message": f"{category.title()} spending is {percentage:.1f}% of income (₹{amount:,.0f})"
                 })
         
-        # Sort by impact
-        leaks.sort(key=lambda x: x["inflation_impact"], reverse=True)
+        # B. INFLATION LEAKS: Check essential categories with high inflation
+        if inflation_value > 6.0:
+            for category, amount in spending["essential"].items():
+                sensitivity = FinancialDecisionEngine.INFLATION_SENSITIVITY.get(
+                    category.lower(), 1.0
+                )
+                impact = inflation_value * sensitivity
+                
+                # Only flag if inflation impact is significant
+                if impact > 8.0:
+                    percentage = (amount / income * 100) if income > 0 else 0
+                    estimated_increase = amount * (impact / 100)
+                    leaks.append({
+                        "category": category.title(),
+                        "amount": amount,
+                        "percentage": round(percentage, 1),
+                        "reason": "inflation_impact",
+                        "inflation_impact": round(impact, 1),
+                        "estimated_increase": round(estimated_increase, 2),
+                        "message": f"{category.title()} impacted by {impact:.1f}% inflation (adds ~₹{estimated_increase:,.0f})"
+                    })
+        
+        # Sort by amount (highest first)
+        leaks.sort(key=lambda x: x["amount"], reverse=True)
         
         return leaks
     
@@ -423,53 +513,44 @@ class FinancialDecisionEngine:
     @staticmethod
     def _calculate_risk(
         percentages: Dict[str, float],
-        violations: List[str],
+        violations: List[Dict],
         inflation: Dict,
-        profile: UserProfile
+        profile: UserProfile,
+        money_leaks: List[Dict]
     ) -> Tuple[int, str]:
         """
         Calculate financial risk score and level
+        Uses centralized scoring module
+        
+        CRITICAL FIX: Now passes money_leaks to scoring function
         
         Returns:
             (risk_score: 0-100, risk_level: str)
         """
-        risk_score = 0
+        # Use centralized scoring system
+        # Note: Scoring module calculates health score (higher = better)
+        # We need risk score (higher = worse), so we invert it
         
-        # Violation penalties
-        risk_score += len(violations) * 10
+        profile_dict = {
+            "has_emergency_fund": profile.has_emergency_fund,
+            "medical_risk": profile.medical_risk,
+            "monthly_income": profile.monthly_income
+        }
         
-        # Savings risk
-        if percentages["actual_savings"] < 10:
-            risk_score += 20
-        elif percentages["actual_savings"] < 15:
-            risk_score += 10
+        # Calculate health score (0-100, higher is better)
+        # FIXED: Now passing money_leaks
+        health_score = calculate_financial_score(
+            percentages=percentages,
+            violations=[v["message"] for v in violations],  # Convert to strings for scoring
+            inflation=inflation,
+            profile=profile_dict,
+            money_leaks=money_leaks
+        )
         
-        # Fixed obligations risk
-        if percentages["fixed"] > 50:
-            risk_score += 15
-        elif percentages["fixed"] > 45:
-            risk_score += 8
+        # Convert health score to risk score (invert)
+        risk_score = 100 - health_score
         
-        # Inflation risk
-        if inflation["pressure"] == "high":
-            risk_score += 15
-        elif inflation["pressure"] == "medium":
-            risk_score += 8
-        
-        # Emergency fund risk
-        if not profile.has_emergency_fund:
-            risk_score += 10
-        
-        # Medical risk
-        if profile.medical_risk == "high":
-            risk_score += 10
-        elif profile.medical_risk == "medium":
-            risk_score += 5
-        
-        # Cap at 100
-        risk_score = min(100, risk_score)
-        
-        # Determine level
+        # Determine risk level based on risk score
         if risk_score >= 70:
             risk_level = "critical"
         elif risk_score >= 50:
@@ -492,23 +573,27 @@ class FinancialDecisionEngine:
         thresholds: Dict,
         inflation: Dict,
         profile: UserProfile,
-        violations: List[str],
-        money_leaks: List[Dict]
+        violations: List[Dict],
+        money_leaks: List[Dict],
+        emi_pressure: Dict
     ) -> List[str]:
         """
         Generate specific, actionable recommendations with ₹ amounts
+        
+        CRITICAL: Returns only top 5 recommendations
+        Includes EMI pressure insights
         """
         recommendations = []
         income = profile.monthly_income
         
         # Savings recommendations
-        current_savings = (percentages["actual_savings"] / 100) * income
+        current_savings = (percentages["savings"] / 100) * income
         target_savings = (thresholds["savings"] / 100) * income
         if current_savings < target_savings:
             deficit = target_savings - current_savings
             recommendations.append(
                 f"Increase monthly savings by ₹{deficit:,.0f} to reach {thresholds['savings']}% target "
-                f"(currently at {percentages['actual_savings']:.1f}%)"
+                f"(currently at {percentages['savings']:.1f}%)"
             )
         
         # Lifestyle reduction
@@ -522,10 +607,16 @@ class FinancialDecisionEngine:
         
         # Money leak recommendations
         for leak in money_leaks[:2]:  # Top 2 leaks
-            recommendations.append(
-                f"Monitor {leak['category']} spending (₹{leak['amount']:,.0f}/month) - "
-                f"inflation impact of {leak['inflation_impact']}% adds ~₹{leak['estimated_increase']:,.0f}"
-            )
+            if leak["reason"] == "inflation_impact":
+                recommendations.append(
+                    f"Monitor {leak['category']} spending (₹{leak['amount']:,.0f}/month) - "
+                    f"inflation impact of {leak['inflation_impact']}% adds ~₹{leak['estimated_increase']:,.0f}"
+                )
+            else:  # lifestyle_overspending
+                recommendations.append(
+                    f"Reduce {leak['category']} spending from ₹{leak['amount']:,.0f} ({leak['percentage']:.1f}% of income) - "
+                    f"this is a money leak"
+                )
         
         # Emergency fund
         if not profile.has_emergency_fund:
@@ -541,14 +632,12 @@ class FinancialDecisionEngine:
                 f"delay non-urgent lifestyle purchases"
             )
         
-        # EMI optimization
-        if profile.emi_amount > 0:
-            emi_pct = (profile.emi_amount / income) * 100
-            if emi_pct > 30:
-                recommendations.append(
-                    f"EMI burden is {emi_pct:.1f}% of income (₹{profile.emi_amount:,.0f}) - "
-                    f"consider refinancing or prepayment to reduce interest"
-                )
+        # EMI optimization (INTEGRATED from inflation_engine)
+        if emi_pressure["emi_pressure"] in ["medium", "high"]:
+            recommendations.append(
+                f"EMI burden is {emi_pressure['percentage']:.1f}% of income (₹{profile.emi_amount:,.0f}) - "
+                f"{emi_pressure['impact']}. Potential increase: ₹{emi_pressure['projected_increase']:,.0f} if rates rise."
+            )
         
         # Category-specific cuts
         lifestyle_total = sum(spending["lifestyle"].values())
@@ -565,7 +654,8 @@ class FinancialDecisionEngine:
                         f"(20% cut from current ₹{amount:,.0f})"
                     )
         
-        return recommendations
+        # CRITICAL: Return only top 5 recommendations
+        return recommendations[:5]
     
     # ========================================================================
     # STEP 7: ACTION PRIORITIZATION
@@ -575,7 +665,7 @@ class FinancialDecisionEngine:
     def _prioritize_actions(
         recommendations: List[str],
         risk_level: str,
-        violations: List[str]
+        violations: List[Dict]
     ) -> List[str]:
         """Extract top 3 priority actions"""
         priority = []
@@ -598,6 +688,33 @@ class FinancialDecisionEngine:
                 priority.append(rec)
         
         return priority[:3]
+    
+    # ========================================================================
+    # STEP 8: SURVIVAL METRIC
+    # ========================================================================
+    
+    @staticmethod
+    def _calculate_survival_months(
+        savings_amount: float,
+        monthly_expenses: float
+    ) -> float:
+        """
+        Calculate how many months user can survive on current savings
+        
+        Args:
+            savings_amount: Current savings amount
+            monthly_expenses: Monthly expenses (not income)
+            
+        Returns:
+            Number of months of survival
+        """
+        if monthly_expenses <= 0:
+            return 0.0
+        
+        # Survival months = savings / monthly expenses
+        survival_months = savings_amount / monthly_expenses
+        
+        return round(survival_months, 1)
 
 
 # ============================================================================

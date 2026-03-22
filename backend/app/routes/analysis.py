@@ -79,15 +79,16 @@ def get_financial_analysis(
                 user_id=current_user.id,
                 score=decision.risk_score,
                 risk_level=decision.risk_level,
-                savings_rate=decision.percentages.get("actual_savings", 0),
+                savings_rate=decision.percentages.get("savings", 0),
                 inflation_data=decision.inflation,
                 percentages=decision.percentages,
                 money_leaks=[
                     {
                         "category": leak.get("category"),
                         "amount": leak.get("amount"),
-                        "inflation_impact": leak.get("inflation_impact"),
-                        "estimated_increase": leak.get("estimated_increase")
+                        "percentage": leak.get("percentage"),
+                        "reason": leak.get("reason"),
+                        "message": leak.get("message")
                     }
                     for leak in decision.money_leaks
                 ],
@@ -111,7 +112,7 @@ def get_financial_analysis(
         return {
             "risk_level": decision.risk_level,
             "risk_score": decision.risk_score,
-            "savings_rate": decision.percentages.get("actual_savings", 0),
+            "savings_rate": decision.percentages.get("savings", 0),
             
             # Inflation context
             "inflation": {
@@ -138,29 +139,35 @@ def get_financial_analysis(
                     "status": "high" if decision.percentages["lifestyle"] > decision.adjusted_thresholds["lifestyle"] else "normal"
                 },
                 "savings": {
-                    "percentage": decision.percentages.get("actual_savings", 0),
+                    "percentage": decision.percentages.get("savings", 0),
                     "amount": decision.amounts.get("savings", 0),
-                    "status": "low" if decision.percentages.get("actual_savings", 0) < decision.adjusted_thresholds["savings"] else "good"
+                    "status": "low" if decision.percentages.get("savings", 0) < decision.adjusted_thresholds["savings"] else "good"
                 }
             },
             
-            # Issues
+            # Issues (structured)
             "impacted_categories": decision.money_leaks,
             "violations": decision.violations,
             
             # Actions
             "recommendations": decision.recommendations,
             "priority_actions": decision.priority_actions,
-            "insights": decision.violations + [
-                f"{leak['category']} spending (₹{leak['amount']:,.0f}) is impacted by {leak['inflation_impact']}% inflation"
+            "insights": [v["message"] for v in decision.violations] + [
+                leak.get("message", f"{leak['category']} spending is {leak['percentage']:.1f}% of income")
                 for leak in decision.money_leaks[:3]
             ],
+            
+            # Cost optimization opportunities (NEW)
+            "optimization_opportunities": decision.optimization_opportunities,
             
             # Targets
             "adjusted_thresholds": decision.adjusted_thresholds,
             
-            # External data
-            "deals": deals,
+            # Survival metric
+            "survival_months": decision.survival_months,
+            
+            # External data (deprecated - kept for backward compatibility)
+            "deals": [],  # Deprecated: use optimization_opportunities instead
             "emi_impact": emi_impact,
             "fuel_impact": fuel_impact
         }
@@ -207,7 +214,8 @@ def get_financial_health_summary(
         "monthly_income": monthly_income,
         "risk_level": decision.risk_level,
         "risk_score": decision.risk_score,
-        "savings_rate": decision.percentages.get("actual_savings", 0),
+        "savings_rate": decision.percentages.get("savings", 0),
+        "survival_months": decision.survival_months,
         "top_actions": decision.priority_actions
     }
 

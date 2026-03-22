@@ -1,102 +1,71 @@
 """
-Inflation Decision Engine
-Transforms CPI data into actionable financial logic for budget optimization
+Inflation Intelligence Module
+Focused responsibilities: inflation pressure, threshold adjustment, and inflation-specific insights
+
+DOES:
+- Adjust budget thresholds based on inflation
+- Generate inflation-specific insights (max 4)
+- Provide category inflation multipliers
+- Calculate transport inflation factor (integrated from fuel service)
+- Detect transport pressure
+
+DOES NOT:
+- Calculate risk scores (use centralized scoring)
+- Generate general recommendations (use optimizer)
+- Perform full financial analysis (use financial_engine)
+- Scrape external websites during requests
 """
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List
 from sqlalchemy.orm import Session
 import logging
 
-from app.services.cpi_service import get_latest_cpi, get_all_cpi_with_inflation
+from app.services.cpi_service import get_inflation_pressure as get_cpi_inflation_pressure
 
 logger = logging.getLogger(__name__)
 
 
-# Category sensitivity to inflation
+# Category sensitivity to inflation - ALIGNED with rule_engine categories
 SENSITIVITY = {
-    "food": "high",
-    "transport": "high", 
-    "healthcare": "high",
+    # Fixed (medium sensitivity)
     "rent": "medium",
+    "emi": "medium",
+    "insurance": "medium",
     "utilities": "medium",
-    "lifestyle": "low",
-    "entertainment": "low",
-    "shopping": "low"
-}
-
-
-def get_inflation_pressure(db: Session) -> Dict:
-    """
-    Calculate inflation pressure score from CPI data
     
-    Returns:
-        {
-            "pressure": "low | medium | high",
-            "value": float,  # YoY inflation %
-            "score": int     # 0-100 normalized
-        }
-    """
-    try:
-        # Get CPI data with inflation metrics
-        cpi_data = get_all_cpi_with_inflation(db, limit=2)
-        
-        if not cpi_data or len(cpi_data) < 1:
-            logger.warning("No CPI data available")
-            return {
-                "pressure": "medium",
-                "value": 5.0,
-                "score": 50,
-                "status": "estimated"
-            }
-        
-        # Get latest inflation
-        latest = cpi_data[-1]
-        yoy_inflation = latest.get("year_over_year_inflation")
-        
-        if yoy_inflation is None:
-            logger.warning("No YoY inflation data available")
-            return {
-                "pressure": "medium",
-                "value": 5.0,
-                "score": 50,
-                "status": "estimated"
-            }
-        
-        # Determine pressure level
-        if yoy_inflation < 3:
-            pressure = "low"
-        elif yoy_inflation <= 6:
-            pressure = "medium"
-        else:
-            pressure = "high"
-        
-        # Normalize to 0-100 score
-        # Cap at 15% for normalization (15% = 100 score)
-        score = min(int((yoy_inflation / 15.0) * 100), 100)
-        
-        return {
-            "pressure": pressure,
-            "value": round(yoy_inflation, 2),
-            "score": score,
-            "status": "actual",
-            "date": latest.get("date")
-        }
-        
-    except Exception as e:
-        logger.error(f"Error calculating inflation pressure: {e}")
-        return {
-            "pressure": "medium",
-            "value": 5.0,
-            "score": 50,
-            "status": "error"
-        }
+    # Essential (high sensitivity)
+    "food": "high",
+    "groceries": "high",
+    "transport": "high",
+    "healthcare": "high",
+    "education": "medium",
+    
+    # Lifestyle (low sensitivity)
+    "eating out": "low",
+    "dining": "low",
+    "shopping": "low",
+    "subscriptions": "low",
+    "entertainment": "low",
+    "lifestyle": "low",
+    
+    # Unexpected (medium sensitivity)
+    "emergency": "medium",
+    "medical emergency": "high"
+}
 
 
 def adjust_budget_thresholds(inflation: Dict) -> Dict[str, float]:
     """
     Dynamically adjust budget thresholds based on inflation pressure
     
+    This is the PRIMARY function for inflation-aware budget adjustment
+    
     Args:
-        inflation: Dict from get_inflation_pressure()
+        inflation: Dict from cpi_service.get_inflation_pressure()
+            {
+                "pressure": "low | medium | high",
+                "value": float,
+                "confidence": "high | medium | low"
+            }
     
     Returns:
         {
@@ -127,16 +96,20 @@ def adjust_budget_thresholds(inflation: Dict) -> Dict[str, float]:
         if inflation_value > 8:
             thresholds["essential"] += 3.0
             thresholds["lifestyle"] = max(8.0, thresholds["lifestyle"] - 3.0)
+        
+        logger.info(f"High inflation ({inflation_value}%) - adjusted thresholds")
     
     # Medium inflation adjustments
     elif pressure == "medium":
         thresholds["essential"] += 2.0
         thresholds["lifestyle"] = max(15.0, thresholds["lifestyle"] - 2.0)
+        logger.info(f"Medium inflation ({inflation_value}%) - slight adjustments")
     
     # Low inflation - encourage savings
     else:
         thresholds["savings"] += 5.0
         thresholds["lifestyle"] = max(15.0, thresholds["lifestyle"] - 2.0)
+        logger.info(f"Low inflation ({inflation_value}%) - encouraging savings")
     
     # Ensure no negative values
     for key in thresholds:
@@ -145,21 +118,297 @@ def adjust_budget_thresholds(inflation: Dict) -> Dict[str, float]:
     return thresholds
 
 
-def get_inflation_impact_categories(
+def get_transport_inflation_factor(inflation: Dict) -> float:
+    """
+    Calculate transport-specific inflation factor
+    
+    Transport costs (fuel) typically inflate 1.2-1.5x faster than general CPI
+    This replaces unreliable fuel price scraping with CPI-derived estimates
+    
+    Args:
+        inflation: Dict from cpi_service.get_inflation_pressure()
+    
+    Returns:
+        Transport inflation factor (e.g., 1.075 for 7.5% transport inflation)
+    """
+    cpi_value = inflation.get("value", 5.0)
+    
+    # Transport inflates 1.2-1.5x faster than general CPI
+    # Use 1.3x as middle ground
+    transport_inflation = cpi_value * 1.3
+    
+    # Cap at realistic values (max 20% annual inflation)
+    transport_inflation = min(transport_inflation, 20.0)
+    
+    # Convert to factor
+    factor = 1.0 + (transport_inflation / 100)
+    
+    return round(factor, 3)
+
+
+def calculate_transport_pressure(
+    transport_spend: float,
+    income: float,
+    inflation: Dict
+) -> Dict:
+    """
+    Calculate transport spending pressure
+    
+    Combines spending percentage with inflation impact
+    
+    Args:
+        transport_spend: Monthly transport spending
+        income: Monthly income
+        inflation: Dict from cpi_service.get_inflation_pressure()
+    
+    Returns:
+        {
+            "pressure": "low | medium | high",
+            "factor": float (inflation factor),
+            "impact": "low | medium | high",
+            "percentage": float (% of income),
+            "estimated_increase": float (₹ amount)
+        }
+    """
+    if income <= 0:
+        return {
+            "pressure": "low",
+            "factor": 1.0,
+            "impact": "low",
+            "percentage": 0.0,
+            "estimated_increase": 0.0
+        }
+    
+    # Calculate percentage of income
+    transport_pct = (transport_spend / income) * 100
+    
+    # Get transport inflation factor
+    transport_factor = get_transport_inflation_factor(inflation)
+    transport_inflation_pct = (transport_factor - 1.0) * 100
+    
+    # Estimate increase in transport costs
+    estimated_increase = transport_spend * (transport_inflation_pct / 100)
+    
+    # Determine pressure level
+    if transport_pct > 10:
+        pressure = "high"
+    elif transport_pct > 5:
+        pressure = "medium"
+    else:
+        pressure = "low"
+    
+    # Determine impact level (combines spending % and inflation)
+    if transport_pct > 10 and inflation.get("pressure") == "high":
+        impact = "high"
+    elif transport_pct > 5 and inflation.get("pressure") in ["medium", "high"]:
+        impact = "medium"
+    else:
+        impact = "low"
+    
+    return {
+        "pressure": pressure,
+        "factor": transport_factor,
+        "impact": impact,
+        "percentage": round(transport_pct, 1),
+        "estimated_increase": round(estimated_increase, 2)
+    }
+
+
+def generate_inflation_insights(
+    inflation: Dict,
+    expenses: List[Dict],
+    monthly_income: float
+) -> List[str]:
+    """
+    Generate inflation-specific insights ONLY
+    
+    CRITICAL: Returns maximum 4 insights
+    Does NOT generate general recommendations
+    
+    Args:
+        inflation: Dict from cpi_service.get_inflation_pressure()
+        expenses: List of expense dicts
+        monthly_income: User's monthly income
+    
+    Returns:
+        List of max 4 inflation-specific insight strings
+    """
+    insights = []
+    
+    pressure = inflation.get("pressure", "medium")
+    inflation_value = inflation.get("value", 5.0)
+    
+    # Insight 1: Overall inflation context
+    if pressure == "high":
+        insights.append(
+            f"Inflation is at {inflation_value}%, creating HIGH pressure on essential expenses. "
+            f"Immediate budget adjustments recommended."
+        )
+    elif pressure == "medium":
+        insights.append(
+            f"Inflation is at {inflation_value}%, creating MODERATE pressure on your budget. "
+            f"Monitor essential spending closely."
+        )
+    else:
+        insights.append(
+            f"Inflation is at {inflation_value}%, which is LOW. "
+            f"Good time to increase savings and investments."
+        )
+    
+    # Insight 2: Category-specific impacts
+    impacted = _get_inflation_impact_categories(expenses, inflation)
+    
+    if impacted:
+        top_impacted = impacted[0]
+        category = top_impacted["category"]
+        amount = top_impacted["amount"]
+        increase_pct = top_impacted["estimated_increase_pct"]
+        
+        estimated_increase = (amount * increase_pct) / 100
+        
+        insights.append(
+            f"Your {category} spending (₹{amount:,.0f}/month) is most affected by inflation. "
+            f"Expect ~₹{estimated_increase:,.0f} increase due to {increase_pct}% price rise."
+        )
+    
+    # Insight 3: Transport-specific insight (integrated from fuel service)
+    transport_spend = sum(
+        exp.get("amount", 0) 
+        for exp in expenses 
+        if exp.get("category", "").lower() in ["transport", "fuel"]
+    )
+    
+    if transport_spend > 0:
+        transport_pressure = calculate_transport_pressure(
+            transport_spend, monthly_income, inflation
+        )
+        
+        if transport_pressure["impact"] in ["medium", "high"]:
+            insights.append(
+                f"Transport costs (₹{transport_spend:,.0f}/month, {transport_pressure['percentage']:.1f}% of income) "
+                f"are rising {(transport_pressure['factor'] - 1.0) * 100:.1f}% due to fuel inflation. "
+                f"Consider carpooling or public transit."
+            )
+    
+    # Insight 4: Inflation-period specific advice
+    if pressure == "high":
+        insights.append(
+            "During high inflation, prioritize essential spending and "
+            "delay non-urgent lifestyle purchases."
+        )
+    elif pressure == "low":
+        insights.append(
+            "Low inflation period - good time to lock in prices for "
+            "long-term contracts and increase investments."
+        )
+    
+    # CRITICAL: Return only top 4 insights
+    return insights[:4]
+
+
+def get_category_inflation_multiplier(category: str, inflation_value: float) -> float:
+    """
+    Get inflation multiplier for a specific category
+    
+    Used to adjust category budgets based on inflation
+    
+    Args:
+        category: Expense category
+        inflation_value: Current inflation rate (%)
+    
+    Returns:
+        Multiplier to apply to category budget (e.g., 1.075 for 7.5% increase)
+    """
+    category_lower = category.lower()
+    sensitivity = SENSITIVITY.get(category_lower, "low")
+    
+    if sensitivity == "high":
+        return 1.0 + (inflation_value / 100 * 1.5)
+    elif sensitivity == "medium":
+        return 1.0 + (inflation_value / 100 * 1.0)
+    else:
+        return 1.0 + (inflation_value / 100 * 0.5)
+
+
+def calculate_emi_pressure(
+    emi_amount: float,
+    income: float
+) -> Dict:
+    """
+    Calculate EMI burden pressure
+    
+    Integrated from RBI service - provides EMI analysis without web scraping
+    
+    Args:
+        emi_amount: Monthly EMI payment
+        income: Monthly income
+    
+    Returns:
+        {
+            "repo_rate": float (static baseline),
+            "emi_pressure": "low | medium | high",
+            "percentage": float (% of income),
+            "impact": str (description),
+            "projected_increase": float (potential increase if rates rise)
+        }
+    """
+    if income <= 0 or emi_amount <= 0:
+        return {
+            "repo_rate": 6.50,
+            "emi_pressure": "low",
+            "percentage": 0.0,
+            "impact": "No EMI detected",
+            "projected_increase": 0.0
+        }
+    
+    # Calculate EMI as percentage of income
+    emi_pct = (emi_amount / income) * 100
+    
+    # Determine pressure level
+    if emi_pct > 40:
+        pressure = "high"
+        impact = "EMI burden is very high - consider refinancing or prepayment"
+    elif emi_pct > 30:
+        pressure = "medium"
+        impact = "EMI burden is moderate - monitor interest rate changes"
+    else:
+        pressure = "low"
+        impact = "EMI burden is manageable"
+    
+    # Static repo rate baseline (no scraping)
+    repo_rate = 6.50
+    
+    # Projected increase if repo rate rises by 0.25%
+    # Typically translates to 2-3% EMI increase for floating rate loans
+    projected_increase = emi_amount * 0.025
+    
+    return {
+        "repo_rate": repo_rate,
+        "emi_pressure": pressure,
+        "percentage": round(emi_pct, 1),
+        "impact": impact,
+        "projected_increase": round(projected_increase, 2)
+    }
+
+
+# ============================================================================
+# INTERNAL HELPER FUNCTIONS
+# ============================================================================
+
+def _get_inflation_impact_categories(
     expenses: List[Dict],
     inflation: Dict
 ) -> List[Dict]:
     """
-    Identify categories most affected by inflation
+    Identify categories most affected by inflation (internal use only)
     
     Args:
         expenses: List of expense dicts with 'category' and 'amount'
-        inflation: Dict from get_inflation_pressure()
+        inflation: Dict from cpi_service.get_inflation_pressure()
     
     Returns:
-        List of categories with impact assessment
+        List of categories with impact assessment, sorted by impact
     """
-    pressure = inflation.get("pressure", "medium")
     inflation_value = inflation.get("value", 5.0)
     
     # Aggregate expenses by category
@@ -204,287 +453,3 @@ def get_inflation_impact_categories(
     )
     
     return impacted_categories
-
-
-def generate_inflation_insights(
-    inflation: Dict,
-    expenses: List[Dict],
-    thresholds: Dict[str, float],
-    monthly_income: float,
-    current_allocation: Dict[str, float]
-) -> List[str]:
-    """
-    Generate specific, actionable inflation-aware insights
-    
-    Args:
-        inflation: Dict from get_inflation_pressure()
-        expenses: List of expense dicts
-        thresholds: Adjusted thresholds from adjust_budget_thresholds()
-        monthly_income: User's monthly income
-        current_allocation: Current spending allocation by category
-    
-    Returns:
-        List of specific insight strings
-    """
-    insights = []
-    
-    pressure = inflation.get("pressure", "medium")
-    inflation_value = inflation.get("value", 5.0)
-    
-    # Get impacted categories
-    impacted = get_inflation_impact_categories(expenses, inflation)
-    
-    # Insight 1: Overall inflation context
-    if pressure == "high":
-        insights.append(
-            f"🔴 Inflation is at {inflation_value}%, creating HIGH pressure on essential expenses. "
-            f"Immediate budget adjustments recommended."
-        )
-    elif pressure == "medium":
-        insights.append(
-            f"🟡 Inflation is at {inflation_value}%, creating MODERATE pressure on your budget. "
-            f"Monitor essential spending closely."
-        )
-    else:
-        insights.append(
-            f"🟢 Inflation is at {inflation_value}%, which is LOW. "
-            f"Good time to increase savings and investments."
-        )
-    
-    # Insight 2: Category-specific impacts
-    if impacted:
-        top_impacted = impacted[0]
-        category = top_impacted["category"]
-        amount = top_impacted["amount"]
-        increase_pct = top_impacted["estimated_increase_pct"]
-        
-        estimated_increase = (amount * increase_pct) / 100
-        
-        insights.append(
-            f"📊 Your {category} spending (₹{amount:,.0f}/month) is most affected by inflation. "
-            f"Expect ~₹{estimated_increase:,.0f} increase due to {increase_pct}% price rise."
-        )
-    
-    # Insight 3: Essential spending vs threshold
-    essential_pct = current_allocation.get("essential", 0)
-    essential_threshold = thresholds.get("essential", 30)
-    
-    if essential_pct > essential_threshold:
-        excess_pct = essential_pct - essential_threshold
-        excess_amount = (excess_pct / 100) * monthly_income
-        
-        insights.append(
-            f"⚠️ Essential spending is {essential_pct:.1f}% of income, "
-            f"₹{excess_amount:,.0f} above inflation-adjusted safe level ({essential_threshold:.0f}%). "
-            f"Review food and transport costs."
-        )
-    
-    # Insight 4: Lifestyle adjustment recommendation
-    lifestyle_pct = current_allocation.get("lifestyle", 0)
-    lifestyle_threshold = thresholds.get("lifestyle", 20)
-    
-    if pressure in ["high", "medium"] and lifestyle_pct > lifestyle_threshold:
-        reduction_needed = lifestyle_pct - lifestyle_threshold
-        reduction_amount = (reduction_needed / 100) * monthly_income
-        
-        insights.append(
-            f"💡 Reduce lifestyle spending by ₹{reduction_amount:,.0f}/month "
-            f"({reduction_needed:.1f}% of income) to offset inflation impact on essentials."
-        )
-    
-    # Insight 5: Savings adjustment
-    savings_pct = current_allocation.get("savings", 0)
-    savings_threshold = thresholds.get("savings", 20)
-    
-    if pressure == "high" and savings_pct < savings_threshold:
-        insights.append(
-            f"🏦 During high inflation, maintain at least {savings_threshold:.0f}% savings "
-            f"to protect against price increases. Current: {savings_pct:.1f}%."
-        )
-    elif pressure == "low" and savings_pct < 25:
-        target_increase = 25 - savings_pct
-        target_amount = (target_increase / 100) * monthly_income
-        
-        insights.append(
-            f"💰 Low inflation period - increase savings by ₹{target_amount:,.0f}/month "
-            f"to reach 25% savings rate. Lock in today's prices."
-        )
-    
-    # Insight 6: Specific category recommendations
-    for category_data in impacted[:2]:  # Top 2 impacted
-        category = category_data["category"]
-        sensitivity = category_data["sensitivity"]
-        
-        if sensitivity == "high":
-            if category.lower() == "food":
-                insights.append(
-                    f"🛒 Food prices rising with inflation. Consider bulk buying, "
-                    f"local markets, and meal planning to reduce impact."
-                )
-            elif category.lower() == "transport":
-                insights.append(
-                    f"⛽ Fuel prices affected by inflation. Explore carpooling, "
-                    f"public transport, or optimize travel routes."
-                )
-    
-    return insights
-
-
-def get_inflation_adjusted_analysis(
-    db: Session,
-    expenses: List[Dict],
-    monthly_income: float,
-    current_allocation: Dict[str, float]
-) -> Dict:
-    """
-    Complete inflation-adjusted financial analysis
-    
-    Args:
-        db: Database session
-        expenses: List of expense dicts
-        monthly_income: User's monthly income
-        current_allocation: Current spending allocation
-    
-    Returns:
-        Complete analysis with inflation adjustments
-    """
-    # Step 1: Get inflation pressure
-    inflation = get_inflation_pressure(db)
-    
-    # Step 2: Adjust thresholds
-    adjusted_thresholds = adjust_budget_thresholds(inflation)
-    
-    # Step 3: Get impacted categories
-    impacted_categories = get_inflation_impact_categories(expenses, inflation)
-    
-    # Step 4: Generate insights
-    insights = generate_inflation_insights(
-        inflation,
-        expenses,
-        adjusted_thresholds,
-        monthly_income,
-        current_allocation
-    )
-    
-    # Step 5: Calculate risk level with inflation consideration
-    risk_score = 0
-    
-    # Inflation risk
-    if inflation["pressure"] == "high":
-        risk_score += 3
-    elif inflation["pressure"] == "medium":
-        risk_score += 1
-    
-    # Allocation risk
-    essential_pct = current_allocation.get("essential", 0)
-    if essential_pct > adjusted_thresholds["essential"]:
-        risk_score += 2
-    
-    savings_pct = current_allocation.get("savings", 0)
-    if savings_pct < adjusted_thresholds["savings"]:
-        risk_score += 2
-    
-    # Determine overall risk
-    if risk_score >= 5:
-        risk_level = "high"
-    elif risk_score >= 3:
-        risk_level = "medium"
-    else:
-        risk_level = "low"
-    
-    return {
-        "risk_level": risk_level,
-        "risk_score": risk_score,
-        "inflation": inflation,
-        "adjusted_thresholds": adjusted_thresholds,
-        "impacted_categories": impacted_categories,
-        "insights": insights,
-        "recommendations": _generate_recommendations(
-            inflation,
-            adjusted_thresholds,
-            current_allocation,
-            monthly_income
-        )
-    }
-
-
-def _generate_recommendations(
-    inflation: Dict,
-    thresholds: Dict[str, float],
-    current_allocation: Dict[str, float],
-    monthly_income: float
-) -> List[str]:
-    """Generate specific action recommendations"""
-    recommendations = []
-    
-    pressure = inflation.get("pressure", "medium")
-    
-    # Essential spending recommendations
-    essential_current = current_allocation.get("essential", 0)
-    essential_target = thresholds["essential"]
-    
-    if essential_current > essential_target:
-        reduction = essential_current - essential_target
-        amount = (reduction / 100) * monthly_income
-        recommendations.append(
-            f"Reduce essential spending by ₹{amount:,.0f}/month to reach {essential_target:.0f}% target"
-        )
-    
-    # Lifestyle recommendations
-    lifestyle_current = current_allocation.get("lifestyle", 0)
-    lifestyle_target = thresholds["lifestyle"]
-    
-    if lifestyle_current > lifestyle_target:
-        reduction = lifestyle_current - lifestyle_target
-        amount = (reduction / 100) * monthly_income
-        recommendations.append(
-            f"Cut lifestyle expenses by ₹{amount:,.0f}/month (dining out, entertainment, shopping)"
-        )
-    
-    # Savings recommendations
-    savings_current = current_allocation.get("savings", 0)
-    savings_target = thresholds["savings"]
-    
-    if savings_current < savings_target:
-        increase = savings_target - savings_current
-        amount = (increase / 100) * monthly_income
-        recommendations.append(
-            f"Increase monthly savings by ₹{amount:,.0f} to reach {savings_target:.0f}% target"
-        )
-    
-    # Inflation-specific recommendations
-    if pressure == "high":
-        recommendations.append(
-            "Build 6-month emergency fund to protect against sustained high inflation"
-        )
-        recommendations.append(
-            "Review and renegotiate recurring subscriptions and services"
-        )
-    elif pressure == "low":
-        recommendations.append(
-            "Invest surplus in inflation-protected instruments (PPF, inflation-indexed bonds)"
-        )
-    
-    return recommendations
-
-
-def get_category_inflation_multiplier(category: str, inflation_value: float) -> float:
-    """
-    Get inflation multiplier for a specific category
-    
-    Args:
-        category: Expense category
-        inflation_value: Current inflation rate
-    
-    Returns:
-        Multiplier to apply to category budget
-    """
-    category_lower = category.lower()
-    sensitivity = SENSITIVITY.get(category_lower, "low")
-    
-    if sensitivity == "high":
-        return 1.0 + (inflation_value / 100 * 1.5)
-    elif sensitivity == "medium":
-        return 1.0 + (inflation_value / 100 * 1.0)
-    else:
-        return 1.0 + (inflation_value / 100 * 0.5)

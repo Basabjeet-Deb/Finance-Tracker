@@ -9,7 +9,7 @@ from typing import List
 import logging
 
 from app.db.database import engine, get_db, Base, test_connection, create_tables
-from app.routes import user, expenses, analysis
+from app.routes import user, expenses, analysis, unified_analysis
 from app.models import CPIData, FuelData
 from app.schemas import CPIDataResponse, FuelDataResponse
 from app.services.cpi_service import (
@@ -51,6 +51,7 @@ app.add_middleware(
 app.include_router(user.router)
 app.include_router(expenses.router)
 app.include_router(analysis.router)
+app.include_router(unified_analysis.router)  # NEW: Unified analysis endpoint
 
 # Global scheduler instance
 scheduler = None
@@ -200,18 +201,28 @@ def test_analysis(db: Session = Depends(get_db)):
 # CPI and External Data Endpoints
 @app.get("/inflation/pressure")
 def get_inflation_pressure_endpoint(db: Session = Depends(get_db)):
-    """Get current inflation pressure score and level"""
-    from app.services.inflation_engine import get_inflation_pressure
+    """
+    Get current inflation pressure classification
+    
+    Returns decision-ready inflation intelligence:
+    - pressure: low/medium/high
+    - value: YoY inflation %
+    - confidence: high/medium/low (based on data freshness)
+    """
+    from app.services.cpi_service import get_inflation_pressure
     return get_inflation_pressure(db)
 
 
 @app.get("/inflation/thresholds")
 def get_inflation_adjusted_thresholds(db: Session = Depends(get_db)):
-    """Get inflation-adjusted budget thresholds"""
-    from app.services.inflation_engine import (
-        get_inflation_pressure,
-        adjust_budget_thresholds
-    )
+    """
+    Get inflation-adjusted budget thresholds
+    
+    Uses inflation intelligence to adjust budget recommendations
+    """
+    from app.services.cpi_service import get_inflation_pressure
+    from app.services.inflation_engine import adjust_budget_thresholds
+    
     inflation = get_inflation_pressure(db)
     thresholds = adjust_budget_thresholds(inflation)
     return {
@@ -222,11 +233,17 @@ def get_inflation_adjusted_thresholds(db: Session = Depends(get_db)):
 
 @app.get("/cpi")
 def get_cpi_with_inflation(
-    limit: int = 100,
+    limit: int = 24,
     db: Session = Depends(get_db)
 ):
-    """Get CPI data with computed inflation metrics"""
-    return get_all_cpi_with_inflation(db, limit)
+    """
+    Get recent CPI data with inflation metrics
+    
+    NOTE: This endpoint returns historical data for analysis.
+    For decision-making, use /inflation/pressure instead.
+    """
+    from app.services.cpi_service import get_recent_cpi_with_inflation
+    return get_recent_cpi_with_inflation(db, months=limit)
 
 
 @app.post("/cpi/refresh")
