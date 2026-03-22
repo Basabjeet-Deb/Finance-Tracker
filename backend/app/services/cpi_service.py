@@ -17,6 +17,11 @@ logger = logging.getLogger(__name__)
 DATA_GOV_API_URL = "https://api.data.gov.in/resource/1ca957b4-0cf0-4d7e-a6a7-627d9f13b170"
 API_KEY = "579b464db66ec23bdd0000019068c43cf6e74bca518f2010329bad4d"
 
+# In-memory cache for CPI data
+_cpi_cache = None
+_cache_timestamp = None
+CACHE_DURATION = 3600  # 1 hour in seconds
+
 # Month mapping
 MONTH_MAP = {
     "January": "01", "February": "02", "March": "03", "April": "04",
@@ -133,7 +138,16 @@ def fetch_and_store_cpi_data(db: Session, force_refresh: bool = False) -> bool:
 
 
 def get_all_cpi_with_inflation(db: Session, limit: int = 100) -> List[Dict]:
-    """Get CPI data with computed inflation metrics"""
+    """Get CPI data with computed inflation metrics (cached)"""
+    global _cpi_cache, _cache_timestamp
+    
+    # Check cache
+    now = datetime.now().timestamp()
+    if _cpi_cache and _cache_timestamp and (now - _cache_timestamp) < CACHE_DURATION:
+        logger.info("Returning cached CPI data")
+        return _cpi_cache[-limit:] if limit else _cpi_cache
+    
+    # Fetch from database
     cpi_records = db.query(CPIData).order_by(CPIData.month).all()
     
     if not cpi_records:
@@ -167,6 +181,11 @@ def get_all_cpi_with_inflation(db: Session, limit: int = 100) -> List[Dict]:
             data["year_over_year_inflation"] = round(yoy, 2)
         
         result.append(data)
+    
+    # Update cache
+    _cpi_cache = result
+    _cache_timestamp = now
+    logger.info(f"Cached {len(result)} CPI records")
     
     if limit and limit < len(result):
         return result[-limit:]

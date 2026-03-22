@@ -2,6 +2,7 @@
 from pydantic import BaseModel, EmailStr
 from datetime import date
 from typing import Optional, List
+from uuid import UUID
 
 
 # ==================== User Schemas ====================
@@ -16,7 +17,7 @@ class UserLogin(BaseModel):
 
 
 class UserResponse(BaseModel):
-    id: int
+    id: UUID
     email: str
     
     class Config:
@@ -44,8 +45,8 @@ class ExpenseUpdate(BaseModel):
 
 
 class ExpenseResponse(BaseModel):
-    id: int
-    user_id: int
+    id: UUID
+    user_id: UUID
     amount: float
     category: str
     date: date
@@ -62,8 +63,8 @@ class BudgetCreate(BaseModel):
 
 
 class BudgetResponse(BaseModel):
-    id: int
-    user_id: int
+    id: UUID
+    user_id: UUID
     monthly_budget: float
     month: str
     

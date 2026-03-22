@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func
 from datetime import datetime, timedelta
 from typing import List
+from uuid import UUID
 
 from app.db.database import get_db
 from app.models import User, Expense, Budget
@@ -58,7 +59,7 @@ def create_expense(
 
 @router.put("/expenses/{expense_id}", response_model=ExpenseResponse)
 def update_expense(
-    expense_id: int,
+    expense_id: UUID,
     expense_data: ExpenseUpdate,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
@@ -89,7 +90,7 @@ def update_expense(
 
 @router.delete("/expenses/{expense_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_expense(
-    expense_id: int,
+    expense_id: UUID,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
@@ -172,7 +173,7 @@ def get_dashboard(
     # Monthly total
     monthly_total = db.query(func.sum(Expense.amount)).filter(
         Expense.user_id == current_user.id,
-        func.strftime('%Y-%m', Expense.date) == current_month
+        func.to_char(Expense.date, 'YYYY-MM') == current_month
     ).scalar() or 0
     
     # Category breakdown
@@ -181,7 +182,7 @@ def get_dashboard(
         func.sum(Expense.amount).label('total')
     ).filter(
         Expense.user_id == current_user.id,
-        func.strftime('%Y-%m', Expense.date) == current_month
+        func.to_char(Expense.date, 'YYYY-MM') == current_month
     ).group_by(Expense.category).all()
     
     category_breakdown = [
@@ -199,7 +200,7 @@ def get_dashboard(
         func.sum(Expense.amount).label('total')
     ).filter(
         Expense.user_id == current_user.id,
-        func.strftime('%Y-%m', Expense.date) == current_month
+        func.to_char(Expense.date, 'YYYY-MM') == current_month
     ).group_by(Expense.date).order_by(Expense.date).all()
     
     daily_spending = [
@@ -210,7 +211,7 @@ def get_dashboard(
     # Current vs last month
     last_month_total = db.query(func.sum(Expense.amount)).filter(
         Expense.user_id == current_user.id,
-        func.strftime('%Y-%m', Expense.date) == last_month
+        func.to_char(Expense.date, 'YYYY-MM') == last_month
     ).scalar() or 0
     
     change_pct = 0

@@ -1,13 +1,14 @@
 """
 FastAPI Application Entry Point
-Clean architecture with modular routes
+Clean architecture with modular routes and Supabase PostgreSQL
 """
-from fastapi import FastAPI, Depends
+from fastapi import FastAPI, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from typing import List
+import logging
 
-from app.db.database import engine, get_db, Base
+from app.db.database import engine, get_db, Base, test_connection, create_tables
 from app.routes import user, expenses, analysis
 from app.models import CPIData, FuelData
 from app.schemas import CPIDataResponse, FuelDataResponse
@@ -17,20 +18,29 @@ from app.services.cpi_service import (
     refresh_cpi_data
 )
 
-# Create database tables
-Base.metadata.create_all(bind=engine)
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 # Initialize FastAPI app
 app = FastAPI(
     title="Personal Finance Tracker - India",
-    version="2.0.0",
-    description="AI-powered personal finance tracker with rule-based optimization"
+    version="3.0.0",
+    description="AI-powered personal finance tracker with Supabase PostgreSQL and rule-based optimization"
 )
 
 # CORS middleware - must be added before routes
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000", "http://localhost:3001", "http://127.0.0.1:3001"],
+    allow_origins=[
+        "http://localhost:3000", 
+        "http://127.0.0.1:3000", 
+        "http://localhost:3001", 
+        "http://127.0.0.1:3001"
+    ],
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
@@ -48,40 +58,70 @@ scheduler = None
 
 @app.on_event("startup")
 async def startup_event():
-    """Initialize external data and start background scheduler"""
+    """Initialize database and external data on startup"""
     global scheduler
+    
+    logger.info("Starting application...")
+    
+    # Test database connection
+    if not test_connection():
+        logger.error("Failed to connect to database. Please check DATABASE_URL.")
+        raise Exception("Database connection failed")
+    
+    logger.info("Database connection successful")
+    
+    # Create tables if they don't exist
+    try:
+        create_tables()
+        logger.info("Database tables verified/created")
+    except Exception as e:
+        logger.error(f"Failed to create tables: {e}")
+        raise
+    
+    # Initialize external data
     db = next(get_db())
     try:
-        # Fetch initial CPI and fuel data
+        # Fetch initial CPI data
+        logger.info("Fetching initial CPI data...")
         fetch_and_store_cpi_data(db)
         
         # Fetch fuel data if available
         try:
             from external_data import fetch_and_store_fuel_data
             fetch_and_store_fuel_data(db)
-        except:
-            pass
+        except Exception as e:
+            logger.warning(f"Could not fetch fuel data: {e}")
         
         # Start background scheduler for monthly updates
         try:
             from scheduler import start_scheduler
             scheduler = start_scheduler()
-        except:
-            pass
+            logger.info("Background scheduler started")
+        except Exception as e:
+            logger.warning(f"Could not start scheduler: {e}")
+    except Exception as e:
+        logger.error(f"Error during startup initialization: {e}")
     finally:
         db.close()
+    
+    logger.info("Application startup complete")
 
 
 @app.on_event("shutdown")
 async def shutdown_event():
-    """Stop background scheduler"""
+    """Stop background scheduler on shutdown"""
     global scheduler
+    logger.info("Shutting down application...")
+    
     if scheduler:
         try:
             from scheduler import stop_scheduler
             stop_scheduler(scheduler)
-        except:
-            pass
+            logger.info("Background scheduler stopped")
+        except Exception as e:
+            logger.warning(f"Error stopping scheduler: {e}")
+    
+    logger.info("Application shutdown complete")
 
 
 @app.get("/")
@@ -89,19 +129,60 @@ def read_root():
     """Health check endpoint"""
     return {
         "message": "Personal Finance Tracker API - India",
-        "version": "2.0.0",
-        "status": "active"
+        "version": "3.0.0",
+        "status": "active",
+        "database": "Supabase PostgreSQL"
     }
 
 
 @app.get("/health")
 def health_check():
     """Detailed health check"""
+    db_status = "connected" if test_connection() else "disconnected"
+    
     return {
-        "status": "healthy",
-        "database": "connected",
-        "scheduler": "running" if scheduler else "stopped"
+        "status": "healthy" if db_status == "connected" else "unhealthy",
+        "database": db_status,
+        "database_type": "PostgreSQL (Supabase)",
+        "scheduler": "running" if scheduler else "stopped",
+        "version": "3.0.0"
     }
+
+
+@app.get("/health/db")
+def health_check_database():
+    """
+    Database connection health check
+    Tests actual database connectivity
+    """
+    try:
+        from sqlalchemy import text
+        db = next(get_db())
+        # Execute a simple query
+        result = db.execute(text("SELECT 1 as health_check"))
+        row = result.fetchone()
+        db.close()
+        
+        if row and row[0] == 1:
+            return {
+                "status": "success",
+                "message": "Database connection is healthy",
+                "database": "PostgreSQL (Supabase)",
+                "connection": "active"
+            }
+        else:
+            raise Exception("Unexpected query result")
+    
+    except Exception as e:
+        logger.error(f"Database health check failed: {e}")
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "status": "error",
+                "message": "Database connection failed",
+                "error": str(e)
+            }
+        )
 
 
 @app.get("/test-analysis")

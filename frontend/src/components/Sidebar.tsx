@@ -10,7 +10,8 @@ import {
   LogOut,
   ChevronLeft,
   ChevronRight,
-  IndianRupee
+  IndianRupee,
+  Receipt
 } from 'lucide-react';
 
 export default function Sidebar({ children }: { children: React.ReactNode }) {
@@ -27,6 +28,7 @@ export default function Sidebar({ children }: { children: React.ReactNode }) {
 
   const navItems = [
     { name: 'Dashboard', path: '/dashboard', icon: LayoutDashboard },
+    { name: 'Expenses', path: '/expenses', icon: Receipt },
     { name: 'Add Expense', path: '/expenses/add', icon: PlusCircle },
     { name: 'Analysis', path: '/insights', icon: LineChart },
   ];

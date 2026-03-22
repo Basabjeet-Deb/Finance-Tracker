@@ -1,26 +1,16 @@
 """
 Financial Analysis Routes
-Rule-based financial engine and insights
+Uses the unified financial decision engine and saves analysis history
 """
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from datetime import datetime
-from typing import List
 
 from app.db.database import get_db
-from app.models import User, Expense, Budget
-from app.schemas import InsightResponse
+from app.models import User, Expense, AnalysisHistory
 from app.routes.user import get_current_user
-from app.services.rule_engine import (
-    FinancialProfile, CategorizationEngine, ConstraintBuilder, RuleEngine
-)
-from app.services.cpi_service import get_latest_cpi, get_all_cpi_with_inflation
-from app.services.inflation_engine import (
-    get_inflation_pressure,
-    adjust_budget_thresholds,
-    get_inflation_adjusted_analysis
-)
+from app.services.financial_engine import analyze_finances
 from app.services.deals_service import DealsService
 from app.services.rbi_service import RBIService
 from app.services.fuel_service import FuelService
@@ -30,7 +20,7 @@ router = APIRouter(tags=["analysis"])
 
 @router.get("/financial-analysis")
 def get_financial_analysis(
-    monthly_income: float,
+    monthly_income: float = None,
     emi_amount: float = 0,
     medical_risk: str = "low",
     family_dependency: int = 0,
@@ -39,17 +29,27 @@ def get_financial_analysis(
     db: Session = Depends(get_db)
 ):
     """
-    Comprehensive financial analysis using rule-based optimization engine
-    with inflation-adjusted decision making
+    Comprehensive financial analysis using unified decision engine
+    
+    Returns actionable insights with specific ₹ amounts
+    Saves analysis to history for tracking
     """
     try:
+        # Use user's income from profile if not provided
+        if monthly_income is None:
+            monthly_income = current_user.income or 50000
+        
+        # Use user's profile data
+        medical_risk = current_user.medical_risk or medical_risk
+        family_dependency = current_user.dependents or family_dependency
+        
         # Get user's expenses for current month
         now = datetime.now()
         current_month = now.strftime("%Y-%m")
         
         expenses = db.query(Expense).filter(
             Expense.user_id == current_user.id,
-            func.strftime('%Y-%m', Expense.date) == current_month
+            func.to_char(Expense.date, 'YYYY-MM') == current_month
         ).all()
         
         # Convert to dict format
@@ -62,94 +62,108 @@ def get_financial_analysis(
             for exp in expenses
         ]
         
-        # Categorize expenses
-        spending = CategorizationEngine.aggregate_spending(expense_list)
-        
-        # Convert SpendingData to dict for calculations
-        spending_dict = {
-            "fixed": spending.fixed,
-            "essential": spending.essential,
-            "lifestyle": spending.lifestyle,
-            "savings": spending.savings,
-            "unexpected": spending.unexpected
-        }
-        
-        # Calculate current allocation
-        current_allocation = RuleEngine.calculate_allocation(spending_dict, monthly_income)
-        
-        # Get inflation-adjusted analysis
-        inflation_analysis = get_inflation_adjusted_analysis(
-            db,
-            expense_list,
-            monthly_income,
-            current_allocation
+        # Run unified financial decision engine
+        decision = analyze_finances(
+            monthly_income=monthly_income,
+            expenses=expense_list,
+            db=db,
+            emi_amount=emi_amount,
+            medical_risk=medical_risk,
+            family_dependency=family_dependency,
+            has_emergency_fund=has_emergency_fund
         )
         
-        # Use inflation-adjusted thresholds
-        adjusted_thresholds = inflation_analysis["adjusted_thresholds"]
+        # Save analysis to history
+        try:
+            analysis_record = AnalysisHistory(
+                user_id=current_user.id,
+                score=decision.risk_score,
+                risk_level=decision.risk_level,
+                savings_rate=decision.percentages.get("actual_savings", 0),
+                inflation_data=decision.inflation,
+                percentages=decision.percentages,
+                money_leaks=[
+                    {
+                        "category": leak.get("category"),
+                        "amount": leak.get("amount"),
+                        "inflation_impact": leak.get("inflation_impact"),
+                        "estimated_increase": leak.get("estimated_increase")
+                    }
+                    for leak in decision.money_leaks
+                ],
+                recommendations=decision.recommendations
+            )
+            db.add(analysis_record)
+            db.commit()
+        except Exception as e:
+            print(f"Could not save analysis history: {e}")
+            # Continue even if history save fails
         
-        # Convert SpendingData to flat dict for external services
-        flat_spending_dict = {}
-        for cat_dict in [spending.fixed, spending.essential, spending.lifestyle, spending.savings, spending.unexpected]:
-            flat_spending_dict.update(cat_dict)
+        # Fetch external market data (non-blocking, use cached/fallback)
+        deals = []
+        emi_impact = {"current_repo_rate": None, "projected_emi_increase": 0, "alert_message": ""}
+        fuel_impact = {"current_avg_petrol_price": None, "metro_prices": {}, "insight": ""}
         
-        # Fetch external metrics with error handling
-        try:
-            deals = DealsService.get_deals_for_user(flat_spending_dict)
-        except Exception as e:
-            print(f"Deals service error: {e}")
-            deals = []
+        # Skip external API calls for faster response
+        # These can be loaded separately if needed
+        
+        # Format response
+        return {
+            "risk_level": decision.risk_level,
+            "risk_score": decision.risk_score,
+            "savings_rate": decision.percentages.get("actual_savings", 0),
             
-        try:
-            emi_impact = RBIService.calculate_emi_impact(emi_amount)
-        except Exception as e:
-            print(f"RBI service error: {e}")
-            emi_impact = {"current_repo_rate": None, "projected_emi_increase": 0, "alert_message": "Error fetching RBI data"}
+            # Inflation context
+            "inflation": {
+                "pressure": decision.inflation["pressure"],
+                "value": decision.inflation["value"],
+                "status": decision.inflation["status"]
+            },
             
-        try:
-            fuel_impact = FuelService.calculate_fuel_impact(flat_spending_dict.get("Transport", 0))
-        except Exception as e:
-            print(f"Fuel service error: {e}")
-            fuel_impact = {"current_avg_petrol_price": None, "metro_prices": {}, "insight": "Error fetching fuel data"}
-
-        # Combine insights
-        combined_insights = {
-            "risk_level": inflation_analysis["risk_level"],
-            "risk_score": inflation_analysis["risk_score"],
-            "savings_rate": round(current_allocation.get("savings", 0), 1),
-            "inflation": inflation_analysis["inflation"],
-            "adjusted_thresholds": adjusted_thresholds,
-            "impacted_categories": inflation_analysis["impacted_categories"],
+            # Spending breakdown
             "spending_summary": {
                 "fixed_obligations": {
-                    "percentage": round(current_allocation.get("fixed", 0), 1),
-                    "amount": round((current_allocation.get("fixed", 0) / 100) * monthly_income, 2),
-                    "status": "high" if current_allocation.get("fixed", 0) > 50 else "normal"
+                    "percentage": decision.percentages["fixed"],
+                    "amount": decision.amounts["fixed"],
+                    "status": "high" if decision.percentages["fixed"] > 50 else "normal"
                 },
                 "essentials": {
-                    "percentage": round(current_allocation.get("essential", 0), 1),
-                    "amount": round((current_allocation.get("essential", 0) / 100) * monthly_income, 2),
-                    "status": "high" if current_allocation.get("essential", 0) > adjusted_thresholds["essential"] else "normal"
+                    "percentage": decision.percentages["essential"],
+                    "amount": decision.amounts["essential"],
+                    "status": "high" if decision.percentages["essential"] > decision.adjusted_thresholds["essential"] else "normal"
                 },
                 "lifestyle": {
-                    "percentage": round(current_allocation.get("lifestyle", 0), 1),
-                    "amount": round((current_allocation.get("lifestyle", 0) / 100) * monthly_income, 2),
-                    "status": "high" if current_allocation.get("lifestyle", 0) > adjusted_thresholds["lifestyle"] else "normal"
+                    "percentage": decision.percentages["lifestyle"],
+                    "amount": decision.amounts["lifestyle"],
+                    "status": "high" if decision.percentages["lifestyle"] > decision.adjusted_thresholds["lifestyle"] else "normal"
                 },
                 "savings": {
-                    "percentage": round(current_allocation.get("savings", 0), 1),
-                    "amount": round((current_allocation.get("savings", 0) / 100) * monthly_income, 2),
-                    "status": "low" if current_allocation.get("savings", 0) < adjusted_thresholds["savings"] else "good"
+                    "percentage": decision.percentages.get("actual_savings", 0),
+                    "amount": decision.amounts.get("savings", 0),
+                    "status": "low" if decision.percentages.get("actual_savings", 0) < decision.adjusted_thresholds["savings"] else "good"
                 }
             },
-            "insights": inflation_analysis["insights"],
-            "recommendations": inflation_analysis["recommendations"],
+            
+            # Issues
+            "impacted_categories": decision.money_leaks,
+            "violations": decision.violations,
+            
+            # Actions
+            "recommendations": decision.recommendations,
+            "priority_actions": decision.priority_actions,
+            "insights": decision.violations + [
+                f"{leak['category']} spending (₹{leak['amount']:,.0f}) is impacted by {leak['inflation_impact']}% inflation"
+                for leak in decision.money_leaks[:3]
+            ],
+            
+            # Targets
+            "adjusted_thresholds": decision.adjusted_thresholds,
+            
+            # External data
             "deals": deals,
             "emi_impact": emi_impact,
             "fuel_impact": fuel_impact
         }
-        
-        return combined_insights
     
     except Exception as e:
         import traceback
@@ -164,20 +178,13 @@ def get_financial_health_summary(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """Quick financial health summary"""
+    """Quick financial health summary using decision engine"""
     now = datetime.now()
     current_month = now.strftime("%Y-%m")
     
-    budget = db.query(Budget).filter(
-        Budget.user_id == current_user.id,
-        Budget.month == current_month
-    ).first()
-    
-    monthly_income = budget.monthly_budget * 1.5 if budget else 50000
-    
     expenses = db.query(Expense).filter(
         Expense.user_id == current_user.id,
-        func.strftime('%Y-%m', Expense.date) == current_month
+        func.to_char(Expense.date, 'YYYY-MM') == current_month
     ).all()
     
     expense_list = [
@@ -185,28 +192,55 @@ def get_financial_health_summary(
         for exp in expenses
     ]
     
-    spending = CategorizationEngine.aggregate_spending(expense_list)
-    spending_dict = {
-        "fixed": spending.fixed,
-        "essential": spending.essential,
-        "lifestyle": spending.lifestyle,
-        "savings": spending.savings,
-        "unexpected": spending.unexpected
-    }
+    # Use user's income or default
+    monthly_income = current_user.income or 50000
     
-    current_allocation = RuleEngine.calculate_allocation(spending_dict, monthly_income)
+    decision = analyze_finances(
+        monthly_income=monthly_income,
+        expenses=expense_list,
+        db=db,
+        medical_risk=current_user.medical_risk or "low",
+        family_dependency=current_user.dependents or 0
+    )
     
     return {
         "monthly_income": monthly_income,
-        "current_allocation": current_allocation,
-        "total_expenses": sum(sum(cat.values()) for cat in spending_dict.values())
+        "risk_level": decision.risk_level,
+        "risk_score": decision.risk_score,
+        "savings_rate": decision.percentages.get("actual_savings", 0),
+        "top_actions": decision.priority_actions
     }
 
 
-@router.get("/insights", response_model=InsightResponse)
-def get_insights(
+@router.get("/analysis-history")
+def get_analysis_history(
+    limit: int = 10,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """Get basic insights (legacy endpoint)"""
-    return InsightResponse(insights=["Analysis available via /financial-analysis endpoint"])
+    """
+    Get user's financial analysis history
+    Shows how financial health has changed over time
+    """
+    history = db.query(AnalysisHistory).filter(
+        AnalysisHistory.user_id == current_user.id
+    ).order_by(
+        AnalysisHistory.created_at.desc()
+    ).limit(limit).all()
+    
+    return {
+        "count": len(history),
+        "history": [
+            {
+                "id": str(record.id),
+                "score": record.score,
+                "risk_level": record.risk_level,
+                "savings_rate": record.savings_rate,
+                "created_at": record.created_at.isoformat(),
+                "inflation": record.inflation_data,
+                "percentages": record.percentages
+            }
+            for record in history
+        ]
+    }
+

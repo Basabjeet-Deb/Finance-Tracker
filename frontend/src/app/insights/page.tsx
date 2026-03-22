@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Sidebar from '@/components/Sidebar';
-import { getFinancialAnalysis } from '@/lib/api';
+import { getFinancialAnalysis, getCurrentSession } from '@/lib/api';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { motion } from 'framer-motion';
@@ -21,21 +21,28 @@ export default function InsightsPage() {
   const router = useRouter();
   const [analysis, setAnalysis] = useState<any>(null);
   const [loading, setLoading] = useState(true);
+  const [dataFetched, setDataFetched] = useState(false);
 
   useEffect(() => {
-    const token = localStorage.getItem('token');
-    const userEmail = localStorage.getItem('userEmail');
+    const checkAuth = async () => {
+      if (dataFetched) return; // Prevent duplicate fetches
+      
+      const session = await getCurrentSession();
+      if (!session) {
+        router.push('/login');
+        return;
+      }
+      
+      setDataFetched(true);
+      fetchAnalysis();
+    };
     
-    if (!token || !userEmail || userEmail !== 'admin@admin.com') {
-      router.push('/login');
-      return;
-    }
-    
-    fetchAnalysis();
-  }, [router]);
+    checkAuth();
+  }, [router, dataFetched]);
 
   const fetchAnalysis = async () => {
     try {
+      console.log('[Insights] Starting analysis fetch');
       const storedProfile = localStorage.getItem('financial_profile');
       let profile = storedProfile ? JSON.parse(storedProfile) : { monthly_income: 50000 };
 
@@ -45,10 +52,18 @@ export default function InsightsPage() {
         family_dependency: profile.family_dependency || 0
       });
       
+      console.log('[Insights] Analysis data received');
       setAnalysis(response.data);
-    } catch (error) {
-      console.error('Error fetching analysis:', error);
+    } catch (error: any) {
+      console.error('[Insights] Error fetching analysis:', error);
+      if (error.response?.status === 401) {
+        console.log('[Insights] Token expired, redirecting to login');
+        localStorage.removeItem('token');
+        localStorage.removeItem('userEmail');
+        router.push('/login');
+      }
     } finally {
+      console.log('[Insights] Setting loading to false');
       setLoading(false);
     }
   };

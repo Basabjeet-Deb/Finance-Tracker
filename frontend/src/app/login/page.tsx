@@ -23,21 +23,24 @@ export default function LoginPage() {
     setLoading(true);
 
     try {
-      // Only allow admin user
-      if (email !== 'admin@admin.com') {
-        setError('Access denied. Only admin users can log in.');
-        setLoading(false);
-        return;
-      }
-
-      const response = await login(email, password);
-      localStorage.setItem('token', response.data.access_token);
-      localStorage.setItem('userEmail', email);
-      document.cookie = `token=${response.data.access_token}; path=/; max-age=86400`;
+      console.log('[Login] Attempting login...');
+      
+      // Login with Supabase Auth
+      const result = await login(email, password);
+      
+      console.log('[Login] Login successful:', result);
+      
+      // Small delay to ensure session is set
+      await new Promise(resolve => setTimeout(resolve, 500));
+      
+      console.log('[Login] Redirecting to dashboard...');
+      
+      // Redirect to dashboard
       router.push('/dashboard');
     } catch (err: any) {
+      console.error('[Login] Login error:', err);
       setError(
-        err.response?.data?.detail || 'Invalid credentials. Please try again.'
+        err.message || 'Invalid credentials. Please try again.'
       );
     } finally {
       setLoading(false);
@@ -67,7 +70,7 @@ export default function LoginPage() {
               Welcome back
             </CardTitle>
             <CardDescription className="text-gray-500 font-medium">
-              Admin access only - Sign in to manage the system
+              Sign in to your account
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -117,16 +120,16 @@ export default function LoginPage() {
                 disabled={loading}
                 className="w-full h-11 bg-indigo-600 hover:bg-indigo-700 text-white shadow-md shadow-indigo-500/20"
               >
-                {loading ? 'Authenticating...' : 'Continue'}
+                {loading ? 'Signing in...' : 'Continue'}
               </Button>
             </form>
 
             <div className="mt-8 text-center text-sm">
               <p className="text-gray-500">
-                Admin credentials required for access
-              </p>
-              <p className="text-xs text-gray-400 mt-2">
-                Contact system administrator for access
+                Don't have an account?{' '}
+                <Link href="/signup" className="font-semibold text-indigo-600 hover:text-indigo-500">
+                  Sign up
+                </Link>
               </p>
             </div>
           </CardContent>
