@@ -2,6 +2,232 @@
 
 AI-powered Personal Finance Tracker with rule-based optimization for Indian users. Built with FastAPI, Next.js, and Supabase PostgreSQL.
 
+## System Architecture
+
+```mermaid
+graph TB
+    subgraph "Frontend - Next.js 14"
+        UI[React Components]
+        Pages[Pages: Dashboard, Expenses, Insights, Login]
+        API_Client[API Client - Axios]
+        Auth_Client[Supabase Auth Client]
+        UI --> Pages
+        Pages --> API_Client
+        Pages --> Auth_Client
+    end
+
+    subgraph "Backend - FastAPI"
+        Main[main.py - FastAPI App]
+        
+        subgraph "Routes Layer"
+            UserRoutes[user.py - Auth & Profile]
+            ExpenseRoutes[expenses.py - CRUD]
+            AnalysisRoutes[analysis.py - Financial Analysis]
+            UnifiedRoutes[unified_analysis.py - Unified API]
+        end
+        
+        subgraph "Services Layer"
+            FinEngine[financial_engine.py<br/>Decision Engine]
+            RuleEngine[rule_engine.py<br/>Constraint Evaluation]
+            Optimizer[optimizer.py<br/>Recommendations]
+            InflationEngine[inflation_engine.py<br/>Inflation Analysis]
+            CPIService[cpi_service.py<br/>CPI Data Fetching]
+            RBIService[rbi_service.py<br/>RBI Rate Scraping]
+            FuelService[fuel_service.py<br/>Fuel Price Scraping]
+            DealsService[deals_service.py<br/>Cost Optimization]
+        end
+        
+        subgraph "Data Layer"
+            Models[SQLAlchemy Models]
+            Database[database.py<br/>Connection Pool]
+        end
+        
+        Main --> UserRoutes
+        Main --> ExpenseRoutes
+        Main --> AnalysisRoutes
+        Main --> UnifiedRoutes
+        
+        UserRoutes --> Models
+        ExpenseRoutes --> Models
+        AnalysisRoutes --> FinEngine
+        UnifiedRoutes --> FinEngine
+        
+        FinEngine --> RuleEngine
+        FinEngine --> Optimizer
+        FinEngine --> InflationEngine
+        FinEngine --> CPIService
+        FinEngine --> DealsService
+        
+        InflationEngine --> CPIService
+        
+        Models --> Database
+        CPIService --> Database
+        RBIService --> Database
+        FuelService --> Database
+    end
+
+    subgraph "Database - Supabase PostgreSQL"
+        Users[(users)]
+        Expenses[(expenses)]
+        Budgets[(budgets)]
+        CPIData[(cpi_data)]
+        FuelData[(fuel_data)]
+        AnalysisHistory[(analysis_history)]
+    end
+
+    subgraph "External APIs"
+        DataGovAPI[data.gov.in<br/>CPI Data API]
+        RBIWebsite[rbi.org.in<br/>Repo Rate]
+        FuelWebsite[goodreturns.in<br/>Fuel Prices]
+    end
+
+    subgraph "Background Jobs"
+        Scheduler[APScheduler<br/>Monthly Data Refresh]
+    end
+
+    API_Client -->|HTTP/REST| Main
+    Auth_Client -->|JWT Auth| UserRoutes
+    
+    Database --> Users
+    Database --> Expenses
+    Database --> Budgets
+    Database --> CPIData
+    Database --> FuelData
+    Database --> AnalysisHistory
+    
+    CPIService -->|Fetch CPI| DataGovAPI
+    RBIService -->|Scrape Rate| RBIWebsite
+    FuelService -->|Scrape Prices| FuelWebsite
+    
+    Scheduler -->|Trigger| CPIService
+    Scheduler -->|Trigger| FuelService
+    
+    style FinEngine fill:#4F46E5,stroke:#312E81,color:#fff
+    style Main fill:#10B981,stroke:#065F46,color:#fff
+    style Database fill:#3B82F6,stroke:#1E40AF,color:#fff
+    style Scheduler fill:#F59E0B,stroke:#B45309,color:#fff
+```
+
+## Data Flow Architecture
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant Frontend
+    participant FastAPI
+    participant FinancialEngine
+    participant Database
+    participant ExternalAPIs
+
+    User->>Frontend: Login
+    Frontend->>FastAPI: POST /auth/login
+    FastAPI->>Database: Verify credentials
+    Database-->>FastAPI: User data
+    FastAPI-->>Frontend: JWT Token
+    
+    User->>Frontend: Add Expense
+    Frontend->>FastAPI: POST /expenses
+    FastAPI->>Database: Insert expense
+    Database-->>FastAPI: Success
+    FastAPI-->>Frontend: Expense created
+    
+    User->>Frontend: View Dashboard
+    Frontend->>FastAPI: GET /dashboard
+    FastAPI->>Database: Fetch expenses
+    Database-->>FastAPI: Expense data
+    FastAPI-->>Frontend: Dashboard data
+    
+    User->>Frontend: Get Financial Analysis
+    Frontend->>FastAPI: GET /financial-analysis
+    FastAPI->>Database: Fetch user expenses
+    Database-->>FastAPI: Expenses
+    FastAPI->>FinancialEngine: analyze_finances()
+    FinancialEngine->>Database: Get CPI data
+    Database-->>FinancialEngine: Inflation data
+    FinancialEngine->>FinancialEngine: Calculate risk score
+    FinancialEngine->>FinancialEngine: Detect violations
+    FinancialEngine->>FinancialEngine: Generate recommendations
+    FinancialEngine-->>FastAPI: FinancialDecision
+    FastAPI->>Database: Save analysis history
+    FastAPI-->>Frontend: Analysis results
+    
+    Note over FastAPI,ExternalAPIs: Background Job (Monthly)
+    FastAPI->>ExternalAPIs: Fetch CPI data
+    ExternalAPIs-->>FastAPI: Latest CPI
+    FastAPI->>Database: Update CPI data
+```
+
+## Database Schema
+
+```mermaid
+erDiagram
+    users ||--o{ expenses : "has many"
+    users ||--o{ budgets : "has many"
+    users ||--o{ analysis_history : "has many"
+    
+    users {
+        uuid id PK
+        string email UK
+        float income
+        int dependents
+        string medical_risk
+        timestamp created_at
+        timestamp updated_at
+    }
+    
+    expenses {
+        uuid id PK
+        uuid user_id FK
+        float amount
+        string category
+        string subcategory
+        string type
+        date date
+        string note
+        timestamp created_at
+        timestamp updated_at
+    }
+    
+    budgets {
+        uuid id PK
+        uuid user_id FK
+        float monthly_budget
+        string month
+        timestamp created_at
+        timestamp updated_at
+    }
+    
+    cpi_data {
+        uuid id PK
+        string month UK
+        float value
+        timestamp created_at
+        timestamp updated_at
+    }
+    
+    fuel_data {
+        uuid id PK
+        date date UK
+        float petrol_price
+        float diesel_price
+        timestamp created_at
+        timestamp updated_at
+    }
+    
+    analysis_history {
+        uuid id PK
+        uuid user_id FK
+        int score
+        string risk_level
+        float savings_rate
+        json inflation_data
+        json percentages
+        json money_leaks
+        json recommendations
+        timestamp created_at
+    }
+```
+
 ## Features
 
 - 💰 Expense tracking with categories
