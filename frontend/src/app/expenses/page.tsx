@@ -55,8 +55,8 @@ export default function ExpensesPage() {
       <Sidebar>
         <div className="flex h-full items-center justify-center">
           <div className="text-center">
-            <div className="w-12 h-12 border-4 border-indigo-200 border-t-indigo-600 rounded-full animate-spin mx-auto mb-4" />
-            <p className="text-sm text-gray-500">Loading expenses...</p>
+            <div className="w-12 h-12 border-4 border-indigo-200 border-t-indigo-600 rounded-full animate-spin mx-auto mb-4 dark:border-indigo-800 dark:border-t-indigo-400" />
+            <p className="text-sm text-gray-500 dark:text-slate-400">Loading expenses...</p>
           </div>
         </div>
       </Sidebar>
@@ -67,9 +67,9 @@ export default function ExpensesPage() {
     <Sidebar>
       <div className="p-6 space-y-6">
         <div className="flex justify-between items-center">
-          <h1 className="text-3xl font-bold">My Expenses</h1>
+          <h1 className="text-3xl font-bold dark:text-slate-50">My Expenses</h1>
           <Link href="/expenses/add">
-            <Button className="bg-indigo-600 hover:bg-indigo-700">
+            <Button className="bg-indigo-600 hover:bg-indigo-700 dark:bg-indigo-500 dark:hover:bg-indigo-600">
               <Plus className="w-4 h-4 mr-2" />
               Add Expense
             </Button>
@@ -79,7 +79,7 @@ export default function ExpensesPage() {
         {expenses.length === 0 ? (
           <Card>
             <CardContent className="p-12 text-center">
-              <p className="text-gray-500 mb-4">No expenses yet</p>
+              <p className="text-gray-500 mb-4 dark:text-slate-400">No expenses yet</p>
               <Link href="/expenses/add">
                 <Button>Add Your First Expense</Button>
               </Link>
@@ -93,12 +93,12 @@ export default function ExpensesPage() {
                   <div className="flex justify-between items-start">
                     <div className="flex-1">
                       <div className="flex items-center gap-3 mb-2">
-                        <h3 className="text-lg font-semibold">{expense.category}</h3>
-                        <span className="text-2xl font-bold text-indigo-600">
+                        <h3 className="text-lg font-semibold dark:text-slate-50">{expense.category}</h3>
+                        <span className="text-2xl font-bold text-indigo-600 dark:text-indigo-400">
                           ₹{expense.amount.toLocaleString('en-IN')}
                         </span>
                       </div>
-                      <p className="text-sm text-gray-500">
+                      <p className="text-sm text-gray-500 dark:text-slate-400">
                         {new Date(expense.date).toLocaleDateString('en-IN', {
                           year: 'numeric',
                           month: 'long',
@@ -106,7 +106,7 @@ export default function ExpensesPage() {
                         })}
                       </p>
                       {expense.note && (
-                        <p className="text-sm text-gray-600 mt-2">{expense.note}</p>
+                        <p className="text-sm text-gray-600 mt-2 dark:text-slate-300">{expense.note}</p>
                       )}
                     </div>
                     <div className="flex gap-2">
@@ -114,7 +114,7 @@ export default function ExpensesPage() {
                         variant="outline"
                         size="sm"
                         onClick={() => handleDelete(expense.id)}
-                        className="text-red-600 hover:bg-red-50"
+                        className="text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-950/50"
                       >
                         <Trash2 className="w-4 h-4" />
                       </Button>

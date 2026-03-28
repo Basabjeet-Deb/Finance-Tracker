@@ -68,25 +68,25 @@ export default function AddExpensePage() {
 
   return (
     <Sidebar>
-      <div className="min-h-screen bg-gray-50/50 p-6 lg:p-10">
+      <div className="min-h-screen bg-gray-50/50 p-6 lg:p-10 dark:bg-transparent">
         
         <div className="max-w-2xl mx-auto space-y-8">
           <motion.div initial={{ opacity: 0, y: -20 }} animate={{ opacity: 1, y: 0 }}>
-            <h1 className="text-3xl font-extrabold text-gray-900 tracking-tight">Record Transaction</h1>
-            <p className="text-gray-500 mt-1">Log an expense or set your monthly spending limit.</p>
+            <h1 className="text-3xl font-extrabold text-gray-900 tracking-tight dark:text-slate-50">Record Transaction</h1>
+            <p className="text-gray-500 mt-1 dark:text-slate-400">Log an expense or set your monthly spending limit.</p>
           </motion.div>
 
           {/* Toggle Tabs */}
-          <div className="flex bg-gray-200/50 p-1 rounded-xl w-fit">
+          <div className="flex bg-gray-200/50 p-1 rounded-xl w-fit dark:bg-slate-800/50">
             <button
               onClick={() => setShowBudget(false)}
-              className={`flex items-center gap-2 px-6 py-2 rounded-lg text-sm font-medium transition-all ${!showBudget ? 'bg-white text-indigo-700 shadow-sm' : 'text-gray-500 hover:text-gray-900'}`}
+              className={`flex items-center gap-2 px-6 py-2 rounded-lg text-sm font-medium transition-all ${!showBudget ? 'bg-white text-indigo-700 shadow-sm dark:bg-slate-700 dark:text-indigo-300' : 'text-gray-500 hover:text-gray-900 dark:text-slate-400 dark:hover:text-slate-50'}`}
             >
               <PlusCircle className="w-4 h-4" /> Add Expense
             </button>
             <button
               onClick={() => setShowBudget(true)}
-              className={`flex items-center gap-2 px-6 py-2 rounded-lg text-sm font-medium transition-all ${showBudget ? 'bg-white text-indigo-700 shadow-sm' : 'text-gray-500 hover:text-gray-900'}`}
+              className={`flex items-center gap-2 px-6 py-2 rounded-lg text-sm font-medium transition-all ${showBudget ? 'bg-white text-indigo-700 shadow-sm dark:bg-slate-700 dark:text-indigo-300' : 'text-gray-500 hover:text-gray-900 dark:text-slate-400 dark:hover:text-slate-50'}`}
             >
               <Target className="w-4 h-4" /> Set Budget
             </button>
@@ -106,7 +106,7 @@ export default function AddExpensePage() {
                     <form onSubmit={handleSubmit} className="space-y-5">
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
                         <div className="space-y-2">
-                          <label className="text-sm font-semibold text-gray-700">Amount (₹)</label>
+                          <label className="text-sm font-semibold text-gray-700 dark:text-slate-300">Amount (₹)</label>
                           <Input
                             type="number"
                             step="0.01"
@@ -114,16 +114,16 @@ export default function AddExpensePage() {
                             onChange={(e) => setAmount(e.target.value)}
                             placeholder="e.g. 1500"
                             required
-                            className="text-lg bg-gray-50/50"
+                            className="text-lg bg-gray-50/50 dark:bg-slate-800/50"
                           />
                         </div>
 
                         <div className="space-y-2">
-                          <label className="text-sm font-semibold text-gray-700">Category</label>
+                          <label className="text-sm font-semibold text-gray-700 dark:text-slate-300">Category</label>
                           <select
                             value={category}
                             onChange={(e) => setCategory(e.target.value)}
-                            className="flex h-10 w-full rounded-md border border-gray-200 bg-gray-50/50 px-3 py-2 text-sm ring-offset-background outline-none hover:bg-white focus:bg-white transition-all focus:ring-2 focus:ring-indigo-500"
+                            className="flex h-10 w-full rounded-md border border-gray-200 bg-gray-50/50 px-3 py-2 text-sm ring-offset-background outline-none hover:bg-white focus:bg-white transition-all focus:ring-2 focus:ring-indigo-500 dark:border-slate-700 dark:bg-slate-800/50 dark:text-slate-50 dark:hover:bg-slate-800 dark:focus:bg-slate-800 dark:focus:ring-indigo-400"
                           >
                             {categories.map((cat) => (
                               <option key={cat} value={cat}>{cat}</option>
@@ -133,7 +133,7 @@ export default function AddExpensePage() {
                       </div>
 
                       <div className="space-y-2">
-                        <label className="text-sm font-semibold text-gray-700">Date</label>
+                        <label className="text-sm font-semibold text-gray-700 dark:text-slate-300">Date</label>
                         <Input
                           type="date"
                           value={date}
@@ -143,11 +143,11 @@ export default function AddExpensePage() {
                       </div>
 
                       <div className="space-y-2">
-                        <label className="text-sm font-semibold text-gray-700">Notes (Optional)</label>
+                        <label className="text-sm font-semibold text-gray-700 dark:text-slate-300">Notes (Optional)</label>
                         <textarea
                           value={note}
                           onChange={(e) => setNote(e.target.value)}
-                          className="w-full px-4 py-3 border border-gray-200 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none bg-gray-50/50 hover:bg-white focus:bg-white transition-all resize-none"
+                          className="w-full px-4 py-3 border border-gray-200 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none bg-gray-50/50 hover:bg-white focus:bg-white transition-all resize-none dark:border-slate-700 dark:bg-slate-800/50 dark:text-slate-50 dark:placeholder:text-slate-400 dark:hover:bg-slate-800 dark:focus:bg-slate-800 dark:focus:ring-indigo-400"
                           placeholder="Lunch with team..."
                           rows={3}
                         />
@@ -155,7 +155,7 @@ export default function AddExpensePage() {
 
                       <StatusMessage error={error} success={success} />
 
-                      <Button type="submit" disabled={loading} className="w-full bg-indigo-600 hover:bg-indigo-700 text-white shadow-lg shadow-indigo-500/20">
+                      <Button type="submit" disabled={loading} className="w-full bg-indigo-600 hover:bg-indigo-700 text-white shadow-lg shadow-indigo-500/20 dark:bg-indigo-500 dark:hover:bg-indigo-600 dark:shadow-indigo-500/10">
                         {loading ? 'Processing...' : 'Save Transaction'}
                       </Button>
                     </form>
@@ -174,7 +174,7 @@ export default function AddExpensePage() {
                   <CardContent className="pt-6">
                     <form onSubmit={handleBudgetSubmit} className="space-y-5">
                       <div className="space-y-2">
-                        <label className="text-sm font-semibold text-gray-700">Monthly Budget (₹)</label>
+                        <label className="text-sm font-semibold text-gray-700 dark:text-slate-300">Monthly Budget (₹)</label>
                         <Input
                           type="number"
                           step="0.01"
@@ -182,14 +182,14 @@ export default function AddExpensePage() {
                           onChange={(e) => setBudget(e.target.value)}
                           placeholder="50000"
                           required
-                          className="text-lg bg-gray-50/50"
+                          className="text-lg bg-gray-50/50 dark:bg-slate-800/50"
                         />
-                        <p className="text-xs text-gray-500 mt-1">Configuring base budget for {getCurrentMonth()}</p>
+                        <p className="text-xs text-gray-500 mt-1 dark:text-slate-400">Configuring base budget for {getCurrentMonth()}</p>
                       </div>
 
                       <StatusMessage error={error} success={success} />
 
-                      <Button type="submit" disabled={loading} className="w-full bg-indigo-600 hover:bg-indigo-700 text-white shadow-lg shadow-indigo-500/20">
+                      <Button type="submit" disabled={loading} className="w-full bg-indigo-600 hover:bg-indigo-700 text-white shadow-lg shadow-indigo-500/20 dark:bg-indigo-500 dark:hover:bg-indigo-600 dark:shadow-indigo-500/10">
                         {loading ? 'Allocating...' : 'Set Baseline'}
                       </Button>
                     </form>
@@ -211,7 +211,9 @@ const StatusMessage = ({ error, success }: { error: string; success: string }) =
       initial={{ opacity: 0, y: -10 }}
       animate={{ opacity: 1, y: 0 }}
       className={`flex items-center gap-2 p-3 rounded-lg text-sm font-medium ${
-        error ? 'bg-red-50 text-red-600 border border-red-100' : 'bg-emerald-50 text-emerald-600 border border-emerald-100'
+        error
+          ? 'bg-red-50 text-red-600 border border-red-100 dark:bg-red-950/50 dark:text-red-400 dark:border-red-900/50'
+          : 'bg-emerald-50 text-emerald-600 border border-emerald-100 dark:bg-emerald-950/50 dark:text-emerald-400 dark:border-emerald-900/50'
       }`}
     >
       {error ? <AlertCircle className="w-4 h-4" /> : <CheckCircle2 className="w-4 h-4" />}

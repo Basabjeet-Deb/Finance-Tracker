@@ -10,10 +10,33 @@
     --foreground: 222.2 84% 4.9%;
     --radius: 0.75rem;
   }
+
+  .dark {
+    --background: 222.2 84% 4.9%;
+    --foreground: 210 40% 98%;
+  }
 }
 
 body {
   font-family: 'Inter', sans-serif;
   background-color: #f8fafc; /* Slate-50 */
   color: #0f172a; /* Slate-900 */
+  transition: background-color 300ms ease, color 300ms ease;
+}
+
+.dark body,
+:is(.dark) body {
+  background-color: #020617; /* Slate-950 */
+  color: #f8fafc; /* Slate-50 */
+}
+
+/* Smooth transitions for all themed elements */
+* {
+  transition-property: background-color, border-color, color, fill, stroke, box-shadow;
+  transition-timing-function: ease;
+  transition-duration: 0ms;
+}
+
+.theme-transition * {
+  transition-duration: 300ms;
 }
